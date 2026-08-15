@@ -1,15 +1,33 @@
 import asyncio
 import logging
+
+# Auto-enable uvloop for better performance on Linux (Arch)
+try:
+    import uvloop
+    uvloop.install()
+except ImportError:
+    pass
+
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, ADMIN_CHAT_ID
 from handlers import start_router, suggest_router, moderation_router, admin_router
-from middlewares import BlockedUsersMiddleware
+from middlewares import BlockedUsersMiddleware, ThrottlingMiddleware
+from database import init_db, close_db, migrate_from_json
 
 logger = logging.getLogger(__name__)
 
 
 async def on_startup(bot: Bot):
-    """Notify admin chat that the bot has started."""
+    """Initialize database and notify admin chat that the bot has started."""
+    # Initialize SQLite database
+    await init_db()
+    logger.info("Database initialized.")
+
+    # One-time migration from old blocked_users.json (if exists)
+    migrated = await migrate_from_json()
+    if migrated:
+        logger.info(f"Migrated {migrated} blocked users from JSON to SQLite.")
+
     try:
         me = await bot.get_me()
         await bot.send_message(
@@ -23,7 +41,7 @@ async def on_startup(bot: Bot):
 
 
 async def on_shutdown(bot: Bot):
-    """Notify admin chat that the bot is stopping."""
+    """Close database and notify admin chat that the bot is stopping."""
     try:
         await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
@@ -32,6 +50,8 @@ async def on_shutdown(bot: Bot):
         )
     except Exception:
         pass
+
+    await close_db()
 
 
 async def main():
@@ -50,8 +70,9 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    # Register middleware to silently ignore blocked users (zero overhead, no response)
+    # Register middlewares (order matters: blocked check first, then throttle)
     dp.message.middleware(BlockedUsersMiddleware())
+    dp.message.middleware(ThrottlingMiddleware())
 
     # Register routers (order matters: start, admin, and moderation before suggest)
     dp.include_router(start_router)

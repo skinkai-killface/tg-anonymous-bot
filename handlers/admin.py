@@ -7,7 +7,7 @@ import logging
 from aiogram import Router, types, Bot, F
 from aiogram.filters import Command
 
-from blocked import block_user, unblock_user, get_blocked_list
+from database import block_user, unblock_user, get_blocked_list, get_stats, get_moderator_stats
 from config import ADMIN_CHAT_ID
 
 router = Router()
@@ -106,7 +106,7 @@ async def cmd_ban(message: types.Message):
         return
 
     user_id = int(args[1].strip())
-    block_user(user_id, reason=f"Banned by {message.from_user.full_name}")
+    await block_user(user_id, reason=f"Banned by {message.from_user.full_name}")
     await message.answer(f"🚫 Пользователь <code>{user_id}</code> заблокирован.", parse_mode="HTML")
 
 
@@ -125,7 +125,7 @@ async def cmd_unban(message: types.Message):
         return
 
     user_id = int(args[1].strip())
-    if unblock_user(user_id):
+    if await unblock_user(user_id):
         await message.answer(f"✅ Пользователь <code>{user_id}</code> разблокирован.", parse_mode="HTML")
     else:
         await message.answer(f"Пользователь <code>{user_id}</code> не был в бан-листе.", parse_mode="HTML")
@@ -140,15 +140,53 @@ async def cmd_banlist(message: types.Message):
     if message.chat.id != ADMIN_CHAT_ID:
         return
 
-    blocked = get_blocked_list()
+    blocked = await get_blocked_list()
     if not blocked:
         await message.answer("Бан-лист пуст.")
         return
 
     lines = ["🚫 <b>Бан-лист:</b>\n"]
-    for uid, info in blocked.items():
-        reason = info.get("reason", "—")
-        lines.append(f"• <code>{uid}</code> — {reason}")
+    for uid, reason, blocked_at in blocked:
+        lines.append(f"• <code>{uid}</code> — {reason or '—'}")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    """
+    /stats — show bot statistics (suggestions, approvals, rejections, blocks, per-moderator).
+    Only works in the admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    stats = await get_stats()
+    total = stats.get("total_suggestions", 0)
+    approved = stats.get("approved", 0)
+    rejected = stats.get("rejected", 0)
+    blocked = stats.get("blocked", 0)
+    pending = total - approved - rejected - blocked
+
+    lines = [
+        "📊 <b>Статистика бота</b>\n",
+        f"📩 Всего предложений: <b>{total}</b>",
+        f"✅ Одобрено: <b>{approved}</b>",
+        f"❌ Отклонено: <b>{rejected}</b>",
+        f"🚫 Заблокировано: <b>{blocked}</b>",
+        f"⏳ В ожидании: <b>{max(0, pending)}</b>",
+    ]
+
+    # Per-moderator breakdown
+    mod_stats = await get_moderator_stats()
+    if mod_stats:
+        lines.append("\n👥 <b>По модераторам:</b>\n")
+        for admin_id, admin_name, a, r, b in mod_stats:
+            total_mod = a + r + b
+            lines.append(
+                f"• <b>{admin_name}</b>: "
+                f"✅{a} ❌{r} 🚫{b} (всего: {total_mod})"
+            )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
 

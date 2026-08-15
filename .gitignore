@@ -5,3 +5,6 @@ __pycache__/
 .env
 .env.*
 blocked_users.json
+blocked_users.json.migrated
+bot_data.db
+bot_data.db-journal

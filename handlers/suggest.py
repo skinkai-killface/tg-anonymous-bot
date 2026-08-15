@@ -3,6 +3,7 @@ from aiogram import Router, types, Bot, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_CHAT_ID
+from database import increment_stat
 
 router = Router()
 # Only process messages sent in private chat with the bot
@@ -54,6 +55,7 @@ async def handle_text(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твоё сообщение отправлено на модерацию!")
 
 
@@ -72,6 +74,7 @@ async def handle_sticker(message: types.Message, bot: Bot):
         sticker=message.sticker.file_id,
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твой стикер отправлен на модерацию!")
 
 
@@ -92,6 +95,7 @@ async def handle_photo(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твой кадр отправлен на модерацию!")
 
 
@@ -110,6 +114,7 @@ async def handle_video(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твоё видео отправлено на модерацию!")
 
 
@@ -128,6 +133,7 @@ async def handle_animation(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твоя GIF отправлена на модерацию!")
 
 
@@ -146,6 +152,7 @@ async def handle_voice(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твоё голосовое сообщение отправлено на модерацию!")
 
 
@@ -164,6 +171,7 @@ async def handle_video_note(message: types.Message, bot: Bot):
         video_note=message.video_note.file_id,
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твой кружочек отправлен на модерацию!")
 
 
@@ -182,6 +190,7 @@ async def handle_audio(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твоё аудио отправлено на модерацию!")
 
 
@@ -200,4 +209,5 @@ async def handle_document(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
+    await increment_stat("total_suggestions")
     await message.answer("✅ Твой документ отправлен на модерацию!")
