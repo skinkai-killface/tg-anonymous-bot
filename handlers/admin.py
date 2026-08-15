@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import asyncio
+import subprocess
 import logging
 from aiogram import Router, types, Bot, F
 from aiogram.filters import Command
@@ -90,6 +91,86 @@ async def cmd_restart(message: types.Message):
     # Re-execute the current python process
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
+
+@router.message(Command("update"))
+async def cmd_update(message: types.Message):
+    """
+    /update — pull latest code from GitHub, install deps, and restart.
+    Full auto-deploy from admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    admin_name = message.from_user.full_name
+    logger.info(f"Update initiated by admin {message.from_user.id} ({admin_name})")
+
+    status_msg = await message.answer("🔄 <b>Обновление бота...</b>\n\n⏳ <code>git pull origin main</code>", parse_mode="HTML")
+
+    # Step 1: git pull
+    try:
+        bot_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        git_result = subprocess.run(
+            ["git", "pull", "origin", "main"],
+            cwd=bot_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        git_output = (git_result.stdout + git_result.stderr).strip()
+
+        if git_result.returncode != 0:
+            await status_msg.edit_text(
+                f"❌ <b>Ошибка git pull:</b>\n<pre>{git_output}</pre>",
+                parse_mode="HTML",
+            )
+            return
+
+        # Check if already up to date
+        if "Already up to date" in git_output or "Already up-to-date" in git_output:
+            await status_msg.edit_text(
+                "✅ <b>Уже актуальная версия.</b>\nОбновление не требуется.",
+                parse_mode="HTML",
+            )
+            return
+
+    except subprocess.TimeoutExpired:
+        await status_msg.edit_text("❌ <b>Таймаут git pull</b> (30 сек.)", parse_mode="HTML")
+        return
+    except Exception as e:
+        await status_msg.edit_text(f"❌ <b>Ошибка:</b> <code>{e}</code>", parse_mode="HTML")
+        return
+
+    # Step 2: pip install
+    await status_msg.edit_text(
+        f"🔄 <b>Обновление бота...</b>\n\n"
+        f"✅ <code>git pull</code>:\n<pre>{git_output[:500]}</pre>\n\n"
+        f"⏳ <code>pip install -r requirements.txt</code>",
+        parse_mode="HTML",
+    )
+
+    try:
+        pip_result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+            cwd=bot_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        pip_output = pip_result.stdout.strip().split("\n")[-1] if pip_result.stdout else "ok"
+    except Exception:
+        pip_output = "skipped"
+
+    # Step 3: Report and restart
+    await status_msg.edit_text(
+        f"🔄 <b>Обновление завершено!</b>\n\n"
+        f"📦 <code>git pull</code>:\n<pre>{git_output[:400]}</pre>\n"
+        f"📦 <code>pip</code>: {pip_output[:200]}\n\n"
+        f"🔄 Перезапуск через 2 сек...",
+        parse_mode="HTML",
+    )
+
+    await asyncio.sleep(2)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 @router.message(Command("ban"))
 async def cmd_ban(message: types.Message):
