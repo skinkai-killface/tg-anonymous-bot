@@ -3,6 +3,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from handlers import start_router, suggest_router, moderation_router, admin_router
+from middlewares import BlockedUsersMiddleware
 
 async def main():
     # Set up logging
@@ -17,8 +18,10 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    # Register routers (order matters: start, admin, and moderation before suggest,
-    # because suggest catches all messages as a "catch-all")
+    # Register middleware to silently ignore blocked users (zero overhead, no response)
+    dp.message.middleware(BlockedUsersMiddleware())
+
+    # Register routers (order matters: start, admin, and moderation before suggest)
     dp.include_router(start_router)
     dp.include_router(admin_router)
     dp.include_router(moderation_router)

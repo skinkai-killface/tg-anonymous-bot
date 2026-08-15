@@ -3,7 +3,6 @@ from aiogram import Router, types, Bot, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_CHAT_ID
-from blocked import is_blocked
 
 router = Router()
 # Only process messages sent in private chat with the bot
@@ -45,10 +44,6 @@ def moderation_keyboard(user_id: int, message_id: int) -> InlineKeyboardMarkup:
 @router.message(F.text)
 async def handle_text(message: types.Message, bot: Bot):
     """Forward a text suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
 
     await bot.send_message(
@@ -65,10 +60,6 @@ async def handle_text(message: types.Message, bot: Bot):
 @router.message(F.sticker)
 async def handle_sticker(message: types.Message, bot: Bot):
     """Forward a sticker suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
 
     await bot.send_message(
@@ -87,10 +78,6 @@ async def handle_sticker(message: types.Message, bot: Bot):
 @router.message(F.photo)
 async def handle_photo(message: types.Message, bot: Bot):
     """Forward a photo suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (фото)</b>\n{author}"
@@ -105,16 +92,12 @@ async def handle_photo(message: types.Message, bot: Bot):
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
-    await message.answer("✅ Твоё фото отправлено на модерацию!")
+    await message.answer("✅ Твой кадр отправлен на модерацию!")
 
 
 @router.message(F.video)
 async def handle_video(message: types.Message, bot: Bot):
     """Forward a video suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (видео)</b>\n{author}"
@@ -133,10 +116,6 @@ async def handle_video(message: types.Message, bot: Bot):
 @router.message(F.animation)
 async def handle_animation(message: types.Message, bot: Bot):
     """Forward a GIF animation suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (GIF)</b>\n{author}"
@@ -155,10 +134,6 @@ async def handle_animation(message: types.Message, bot: Bot):
 @router.message(F.voice)
 async def handle_voice(message: types.Message, bot: Bot):
     """Forward a voice message suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (голосовое)</b>\n{author}"
@@ -177,10 +152,6 @@ async def handle_voice(message: types.Message, bot: Bot):
 @router.message(F.video_note)
 async def handle_video_note(message: types.Message, bot: Bot):
     """Forward a video note (circle) suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
 
     await bot.send_message(
@@ -199,10 +170,6 @@ async def handle_video_note(message: types.Message, bot: Bot):
 @router.message(F.audio)
 async def handle_audio(message: types.Message, bot: Bot):
     """Forward an audio suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (аудио)</b>\n{author}"
@@ -221,10 +188,6 @@ async def handle_audio(message: types.Message, bot: Bot):
 @router.message(F.document)
 async def handle_document(message: types.Message, bot: Bot):
     """Forward a document suggestion to the admin chat for moderation."""
-    if is_blocked(message.from_user.id):
-        await message.answer("⛔ Вы заблокированы и не можете отправлять предложения.")
-        return
-
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (документ)</b>\n{author}"
