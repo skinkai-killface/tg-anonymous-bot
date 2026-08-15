@@ -95,7 +95,7 @@ async def cmd_restart(message: types.Message):
 @router.message(Command("update"))
 async def cmd_update(message: types.Message):
     """
-    /update — pull latest code from GitHub, install deps, and restart.
+    /update — pull latest code from GitHub, install deps if needed, and restart.
     Full auto-deploy from admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
@@ -106,19 +106,20 @@ async def cmd_update(message: types.Message):
 
     status_msg = await message.answer("🔄 <b>Обновление бота...</b>\n\n⏳ <code>git pull origin main</code>", parse_mode="HTML")
 
-    # Step 1: git pull
-    try:
-        bot_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        git_result = subprocess.run(
-            ["git", "pull", "origin", "main"],
-            cwd=bot_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        git_output = (git_result.stdout + git_result.stderr).strip()
+    bot_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-        if git_result.returncode != 0:
+    # Step 1: git pull (async)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "pull", "origin", "main",
+            cwd=bot_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        git_output = (stdout.decode(errors="replace") + stderr.decode(errors="replace")).strip()
+
+        if proc.returncode != 0:
             await status_msg.edit_text(
                 f"❌ <b>Ошибка git pull:</b>\n<pre>{git_output}</pre>",
                 parse_mode="HTML",
@@ -133,38 +134,44 @@ async def cmd_update(message: types.Message):
             )
             return
 
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
         await status_msg.edit_text("❌ <b>Таймаут git pull</b> (30 сек.)", parse_mode="HTML")
         return
     except Exception as e:
-        await status_msg.edit_text(f"❌ <b>Ошибка:</b> <code>{e}</code>", parse_mode="HTML")
+        await status_msg.edit_text(f"❌ <b>Ошибка при pull:</b> <code>{e}</code>", parse_mode="HTML")
         return
 
-    # Step 2: pip install
-    await status_msg.edit_text(
-        f"🔄 <b>Обновление бота...</b>\n\n"
-        f"✅ <code>git pull</code>:\n<pre>{git_output[:500]}</pre>\n\n"
-        f"⏳ <code>pip install -r requirements.txt</code>",
-        parse_mode="HTML",
-    )
+    # Step 2: pip install ONLY if requirements.txt was changed in this pull
+    req_changed = "requirements.txt" in git_output
+    pip_info = "не менялись (пропущено)"
 
-    try:
-        pip_result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
-            cwd=bot_dir,
-            capture_output=True,
-            text=True,
-            timeout=120,
+    if req_changed:
+        await status_msg.edit_text(
+            f"🔄 <b>Обновление бота...</b>\n\n"
+            f"✅ <code>git pull</code>:\n<pre>{git_output[:400]}</pre>\n\n"
+            f"⏳ Обновление зависимостей <code>requirements.txt</code>...",
+            parse_mode="HTML",
         )
-        pip_output = pip_result.stdout.strip().split("\n")[-1] if pip_result.stdout else "ok"
-    except Exception:
-        pip_output = "skipped"
+        try:
+            pip_proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check", "-r", "requirements.txt",
+                cwd=bot_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            p_stdout, p_stderr = await asyncio.wait_for(pip_proc.communicate(), timeout=60.0)
+            pip_out = p_stdout.decode(errors="replace").strip()
+            pip_info = pip_out.split("\n")[-1] if pip_out else "установлено"
+        except asyncio.TimeoutError:
+            pip_info = "⚠️ таймаут pip (продолжаем запуск)"
+        except Exception as e:
+            pip_info = f"⚠️ ошибка pip ({e})"
 
     # Step 3: Report and restart
     await status_msg.edit_text(
         f"🔄 <b>Обновление завершено!</b>\n\n"
         f"📦 <code>git pull</code>:\n<pre>{git_output[:400]}</pre>\n"
-        f"📦 <code>pip</code>: {pip_output[:200]}\n\n"
+        f"📦 <code>pip</code>: {pip_info}\n\n"
         f"🔄 Перезапуск через 2 сек...",
         parse_mode="HTML",
     )
