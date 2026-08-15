@@ -65,6 +65,32 @@ def extract_user_id(message: types.Message) -> int | None:
     return None
 
 
+@router.message(Command("help"))
+async def cmd_help(message: types.Message):
+    """
+    /help — list all available commands in the admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    text = (
+        f"📖 <b>Команды бота (v{BOT_VERSION}):</b>\n\n"
+        "⚡ <b>Управление и статус:</b>\n"
+        "• /ping — проверка задержки и отклика бота\n"
+        "• /stats — общая статистика и активность модераторов\n"
+        "• /restart — мягкий перезапуск бота\n"
+        "• /update — автообновление (git pull + pip + restart)\n"
+        "• /help — список всех команд\n\n"
+        "🚫 <b>Модерация пользователей:</b>\n"
+        "• /ban <code>&lt;id&gt;</code> — заблокировать по ID\n"
+        "• /unban <code>&lt;id&gt;</code> — разблокировать по ID\n"
+        "• /banlist — список заблокированных\n\n"
+        "💬 <b>Ответ автору предложения:</b>\n"
+        "• Ответьте (Reply) на сообщение с предложкой в этом чате, и ваш текст/медиа отправится автору в ЛС."
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
 @router.message(Command("ping"))
 async def cmd_ping(message: types.Message):
     """
