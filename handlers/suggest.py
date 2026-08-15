@@ -70,16 +70,16 @@ async def handle_photo(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    caption = message.caption or ""
+    user_caption = message.caption or ""
+    header = f"📩 <b>Новое предложение (фото)</b>\n{author}"
+    full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
     photo = message.photo[-1]  # highest resolution
 
     await bot.send_photo(
         chat_id=ADMIN_CHAT_ID,
         photo=photo.file_id,
-        caption=f"📩 <b>Новое предложение (фото)</b>\n"
-                f"{author}\n\n"
-                f"{caption}",
+        caption=full_caption,
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
@@ -94,14 +94,14 @@ async def handle_video(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    caption = message.caption or ""
+    user_caption = message.caption or ""
+    header = f"📩 <b>Новое предложение (видео)</b>\n{author}"
+    full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
     await bot.send_video(
         chat_id=ADMIN_CHAT_ID,
         video=message.video.file_id,
-        caption=f"📩 <b>Новое предложение (видео)</b>\n"
-                f"{author}\n\n"
-                f"{caption}",
+        caption=full_caption,
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
@@ -116,14 +116,14 @@ async def handle_document(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    caption = message.caption or ""
+    user_caption = message.caption or ""
+    header = f"📩 <b>Новое предложение (документ)</b>\n{author}"
+    full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
     await bot.send_document(
         chat_id=ADMIN_CHAT_ID,
         document=message.document.file_id,
-        caption=f"📩 <b>Новое предложение (документ)</b>\n"
-                f"{author}\n\n"
-                f"{caption}",
+        caption=full_caption,
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )

@@ -9,11 +9,41 @@ CHANNEL_HEADER = "📩 <b>Новое анонимное сообщение:</b>"
 
 
 def strip_header(text: str) -> str:
-    """Strip the '📩 Новое предложение\n👤 Автор: ...' header separated by \n\n."""
+    """
+    Strips the moderation header (author info, ID, 'Новое предложение', etc.)
+    and returns ONLY the user's actual text/caption.
+    If the user sent media without text, returns empty string "".
+    """
     if not text:
         return ""
-    parts = text.split("\n\n", 1)
-    return parts[1] if len(parts) > 1 else text
+
+    # Split by double newline first
+    if "\n\n" in text:
+        parts = text.split("\n\n", 1)
+        user_content = parts[1].strip()
+        # Clean up any trailing admin status if present
+        if user_content.startswith("✅ Одобрено") or user_content.startswith("❌ Отклонено"):
+            return ""
+        return user_content
+
+    # If no \n\n, check if the whole text is only the moderation header
+    lines = text.splitlines()
+    filtered_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if (
+            "Новое предложение" in stripped
+            or "Автор:" in stripped
+            or "ID:" in stripped
+            or "Одобрено" in stripped
+            or "Отклонено" in stripped
+            or "Заблокирован" in stripped
+            or not stripped
+        ):
+            continue
+        filtered_lines.append(line)
+
+    return "\n".join(filtered_lines).strip()
 
 
 @router.callback_query(F.data.startswith("approve:"))
@@ -29,7 +59,7 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
 
     if source_msg.text:
         content = strip_header(source_msg.text)
-        post_text = f"{CHANNEL_HEADER}\n\n{content}"
+        post_text = f"{CHANNEL_HEADER}\n\n{content}" if content else CHANNEL_HEADER
         await bot.send_message(
             chat_id=CHANNEL_ID,
             text=post_text,
