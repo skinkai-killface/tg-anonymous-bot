@@ -145,6 +145,17 @@ async def cmd_update(message: types.Message):
     req_changed = "requirements.txt" in git_output
     pip_info = "не менялись (пропущено)"
 
+    # Detect python/pip executable (prefer venv if exists)
+    py_exec = sys.executable
+    for venv_path in [
+        os.path.join(bot_dir, "venv", "bin", "python"),
+        os.path.join(bot_dir, ".venv", "bin", "python"),
+        os.path.join(bot_dir, "venv", "Scripts", "python.exe"),
+    ]:
+        if os.path.isfile(venv_path):
+            py_exec = venv_path
+            break
+
     if req_changed:
         await status_msg.edit_text(
             f"🔄 <b>Обновление бота...</b>\n\n"
@@ -153,14 +164,21 @@ async def cmd_update(message: types.Message):
             parse_mode="HTML",
         )
         try:
+            pip_cmd = [
+                py_exec, "-m", "pip", "install",
+                "--no-cache-dir",
+                "--disable-pip-version-check",
+                "--break-system-packages",
+                "-r", "requirements.txt",
+            ]
             pip_proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check", "-r", "requirements.txt",
+                *pip_cmd,
                 cwd=bot_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             p_stdout, p_stderr = await asyncio.wait_for(pip_proc.communicate(), timeout=60.0)
-            pip_out = p_stdout.decode(errors="replace").strip()
+            pip_out = (p_stdout.decode(errors="replace") + p_stderr.decode(errors="replace")).strip()
             pip_info = pip_out.split("\n")[-1] if pip_out else "установлено"
         except asyncio.TimeoutError:
             pip_info = "⚠️ таймаут pip (продолжаем запуск)"
@@ -177,7 +195,7 @@ async def cmd_update(message: types.Message):
     )
 
     await asyncio.sleep(2)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    os.execv(py_exec, [py_exec] + sys.argv)
 
 @router.message(Command("ban"))
 async def cmd_ban(message: types.Message):
