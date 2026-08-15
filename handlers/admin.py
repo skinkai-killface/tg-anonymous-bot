@@ -1,4 +1,8 @@
 import re
+import os
+import sys
+import time
+import asyncio
 import logging
 from aiogram import Router, types, Bot, F
 from aiogram.filters import Command
@@ -52,6 +56,39 @@ def extract_user_id(message: types.Message) -> int | None:
         return int(match.group(1))
 
     return None
+
+
+@router.message(Command("ping"))
+async def cmd_ping(message: types.Message):
+    """
+    /ping — check bot latency and responsiveness.
+    Only works in the admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    start_time = time.monotonic()
+    msg = await message.answer("🏓 Понг...")
+    end_time = time.monotonic()
+    latency = round((end_time - start_time) * 1000)
+    await msg.edit_text(f"🏓 <b>Понг!</b>\n⏱ Задержка: <code>{latency} ms</code>", parse_mode="HTML")
+
+
+@router.message(Command("restart"))
+async def cmd_restart(message: types.Message):
+    """
+    /restart — gracefully restart the bot process.
+    Only works in the admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    await message.answer("🔄 <b>Перезапуск бота...</b>", parse_mode="HTML")
+    logger.info(f"Restart initiated by admin {message.from_user.id} ({message.from_user.full_name})")
+    await asyncio.sleep(1)
+
+    # Re-execute the current python process
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 @router.message(Command("ban"))
