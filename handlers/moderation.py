@@ -46,6 +46,27 @@ def strip_header(text: str) -> str:
     return "\n".join(filtered_lines).strip()
 
 
+async def mark_moderation_message(source_msg: types.Message, status_text: str):
+    """Safely edit or reply to the moderation message after admin action."""
+    try:
+        if source_msg.text:
+            await source_msg.edit_text(
+                source_msg.text + f"\n\n{status_text}",
+                parse_mode="HTML",
+            )
+        elif source_msg.caption is not None:
+            await source_msg.edit_caption(
+                caption=(source_msg.caption or "") + f"\n\n{status_text}",
+                parse_mode="HTML",
+            )
+        else:
+            # For stickers / video_notes where caption is impossible
+            await source_msg.edit_reply_markup(reply_markup=None)
+            await source_msg.reply(status_text, parse_mode="HTML")
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data.startswith("approve:"))
 async def on_approve(callback: types.CallbackQuery, bot: Bot):
     """
@@ -65,6 +86,16 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
             text=post_text,
             parse_mode="HTML",
         )
+    elif source_msg.sticker:
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=CHANNEL_HEADER,
+            parse_mode="HTML",
+        )
+        await bot.send_sticker(
+            chat_id=CHANNEL_ID,
+            sticker=source_msg.sticker.file_id,
+        )
     elif source_msg.photo:
         caption = strip_header(source_msg.caption or "")
         post_caption = f"{CHANNEL_HEADER}\n\n{caption}" if caption else CHANNEL_HEADER
@@ -83,6 +114,43 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
             caption=post_caption,
             parse_mode="HTML",
         )
+    elif source_msg.animation:
+        caption = strip_header(source_msg.caption or "")
+        post_caption = f"{CHANNEL_HEADER}\n\n{caption}" if caption else CHANNEL_HEADER
+        await bot.send_animation(
+            chat_id=CHANNEL_ID,
+            animation=source_msg.animation.file_id,
+            caption=post_caption,
+            parse_mode="HTML",
+        )
+    elif source_msg.voice:
+        caption = strip_header(source_msg.caption or "")
+        post_caption = f"{CHANNEL_HEADER}\n\n{caption}" if caption else CHANNEL_HEADER
+        await bot.send_voice(
+            chat_id=CHANNEL_ID,
+            voice=source_msg.voice.file_id,
+            caption=post_caption,
+            parse_mode="HTML",
+        )
+    elif source_msg.video_note:
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=CHANNEL_HEADER,
+            parse_mode="HTML",
+        )
+        await bot.send_video_note(
+            chat_id=CHANNEL_ID,
+            video_note=source_msg.video_note.file_id,
+        )
+    elif source_msg.audio:
+        caption = strip_header(source_msg.caption or "")
+        post_caption = f"{CHANNEL_HEADER}\n\n{caption}" if caption else CHANNEL_HEADER
+        await bot.send_audio(
+            chat_id=CHANNEL_ID,
+            audio=source_msg.audio.file_id,
+            caption=post_caption,
+            parse_mode="HTML",
+        )
     elif source_msg.document:
         caption = strip_header(source_msg.caption or "")
         post_caption = f"{CHANNEL_HEADER}\n\n{caption}" if caption else CHANNEL_HEADER
@@ -95,20 +163,7 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
 
     # Update the admin message to show it was approved
     admin_name = callback.from_user.full_name
-    try:
-        if source_msg.text:
-            await source_msg.edit_text(
-                source_msg.text + f"\n\n✅ <b>Одобрено</b> — {admin_name}",
-                parse_mode="HTML",
-            )
-        else:
-            await source_msg.edit_caption(
-                caption=(source_msg.caption or "")
-                + f"\n\n✅ <b>Одобрено</b> — {admin_name}",
-                parse_mode="HTML",
-            )
-    except Exception:
-        pass  # message may already be edited
+    await mark_moderation_message(source_msg, f"✅ <b>Одобрено</b> — {admin_name}")
 
     # Notify the user that their suggestion was approved
     try:
@@ -134,20 +189,7 @@ async def on_reject(callback: types.CallbackQuery, bot: Bot):
     admin_name = callback.from_user.full_name
 
     # Update the admin message to show it was rejected
-    try:
-        if source_msg.text:
-            await source_msg.edit_text(
-                source_msg.text + f"\n\n❌ <b>Отклонено</b> — {admin_name}",
-                parse_mode="HTML",
-            )
-        else:
-            await source_msg.edit_caption(
-                caption=(source_msg.caption or "")
-                + f"\n\n❌ <b>Отклонено</b> — {admin_name}",
-                parse_mode="HTML",
-            )
-    except Exception:
-        pass
+    await mark_moderation_message(source_msg, f"❌ <b>Отклонено</b> — {admin_name}")
 
     # Notify the user
     try:
@@ -176,21 +218,7 @@ async def on_block(callback: types.CallbackQuery, bot: Bot):
     admin_name = callback.from_user.full_name
 
     # Update the admin message
-    try:
-        if source_msg.text:
-            await source_msg.edit_text(
-                source_msg.text
-                + f"\n\n🚫 <b>Заблокирован и отклонён</b> — {admin_name}",
-                parse_mode="HTML",
-            )
-        else:
-            await source_msg.edit_caption(
-                caption=(source_msg.caption or "")
-                + f"\n\n🚫 <b>Заблокирован и отклонён</b> — {admin_name}",
-                parse_mode="HTML",
-            )
-    except Exception:
-        pass
+    await mark_moderation_message(source_msg, f"🚫 <b>Заблокирован и отклонён</b> — {admin_name}")
 
     # Notify the user
     try:
