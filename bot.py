@@ -9,7 +9,7 @@ except ImportError:
     pass
 
 from aiogram import Bot, Dispatcher
-from config import BOT_TOKEN, ADMIN_CHAT_ID
+from config import BOT_TOKEN, ADMIN_CHAT_ID, BOT_VERSION
 from handlers import start_router, suggest_router, moderation_router, admin_router
 from middlewares import BlockedUsersMiddleware, ThrottlingMiddleware
 from database import init_db, close_db, migrate_from_json
@@ -32,7 +32,7 @@ async def on_startup(bot: Bot):
         me = await bot.get_me()
         await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=f"🚀 <b>Бот @{me.username} успешно обновлён и запущен!</b>\n✨ <i>Версия с автообновлением, SQLite и защитой от спама активна.</i>",
+            text=f"🟢 <b>Бот @{me.username} (v{BOT_VERSION}) успешно запущен и готов к работе!</b>",
             parse_mode="HTML",
         )
         logger.info("Startup notification sent to admin chat.")

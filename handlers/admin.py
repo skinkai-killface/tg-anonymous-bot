@@ -9,7 +9,7 @@ from aiogram import Router, types, Bot, F
 from aiogram.filters import Command
 
 from database import block_user, unblock_user, get_blocked_list, get_stats, get_moderator_stats
-from config import ADMIN_CHAT_ID
+from config import ADMIN_CHAT_ID, BOT_VERSION
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def cmd_ping(message: types.Message):
     msg = await message.answer("🏓 Понг...")
     end_time = time.monotonic()
     latency = round((end_time - start_time) * 1000)
-    await msg.edit_text(f"🏓 <b>Понг!</b>\n⏱ Задержка: <code>{latency} ms</code>", parse_mode="HTML")
+    await msg.edit_text(f"🏓 <b>Понг!</b>\n⏱ Задержка: <code>{latency} ms</code>\n🏷 Версия: <code>v{BOT_VERSION}</code>", parse_mode="HTML")
 
 
 @router.message(Command("restart"))

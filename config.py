@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BOT_VERSION = "1.1.2"
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
     raise ValueError("No BOT_TOKEN provided in .env file. Please add your token.")
