@@ -61,3 +61,8 @@ git pull
 pip install -r requirements.txt  # если добавились новые зависимости
 sudo systemctl restart tgbot
 ```
+
+## Автор и Лицензия
+
+- **Автор**: [@NAWMBAD](https://t.me/NAWMBAD) (2026)
+- **Лицензия**: [MIT License](LICENSE)

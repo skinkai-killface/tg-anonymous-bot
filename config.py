@@ -1,9 +1,15 @@
+# --------------------------------------------------------
+# Telegram Anonymous Suggestion Bot
+# Author: @NAWMBAD (2026)
+# Licensed under the MIT License
+# --------------------------------------------------------
+
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_VERSION = "1.1.2"
+BOT_VERSION = "1.1.3"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":

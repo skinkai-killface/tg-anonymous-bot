@@ -1,3 +1,9 @@
+# --------------------------------------------------------
+# Telegram Anonymous Suggestion Bot
+# Author: @NAWMBAD (2026)
+# Licensed under the MIT License
+# --------------------------------------------------------
+
 from aiogram import Router, types, F
 from aiogram.filters import CommandStart
 

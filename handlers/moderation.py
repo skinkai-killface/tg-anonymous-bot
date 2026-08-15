@@ -1,3 +1,9 @@
+# --------------------------------------------------------
+# Telegram Anonymous Suggestion Bot
+# Author: @NAWMBAD (2026)
+# Licensed under the MIT License
+# --------------------------------------------------------
+
 import asyncio
 import logging
 from aiogram import Router, types, Bot, F

@@ -1,3 +1,9 @@
+# --------------------------------------------------------
+# Telegram Anonymous Suggestion Bot
+# Author: @NAWMBAD (2026)
+# Licensed under the MIT License
+# --------------------------------------------------------
+
 """
 Bot middlewares:
 - BlockedUsersMiddleware  — silently drops updates from blocked users (O(1) in-memory).
