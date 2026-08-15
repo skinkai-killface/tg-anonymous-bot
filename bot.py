@@ -32,7 +32,7 @@ async def on_startup(bot: Bot):
         me = await bot.get_me()
         await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=f"🟢 <b>Бот @{me.username} успешно запущен и готов к работе!</b>",
+            text=f"🚀 <b>Бот @{me.username} успешно обновлён и запущен!</b>\n✨ <i>Версия с автообновлением, SQLite и защитой от спама активна.</i>",
             parse_mode="HTML",
         )
         logger.info("Startup notification sent to admin chat.")
