@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_VERSION = "1.1.4"
+BOT_VERSION = "1.1.5"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
