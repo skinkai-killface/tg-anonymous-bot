@@ -291,8 +291,19 @@ async def cmd_restart(message: types.Message):
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
+from auto_updater import run_update_process
+
+
+@router.callback_query(F.data == "apply_update")
+async def on_apply_update_callback(callback: types.CallbackQuery, bot: Bot):
+    """Admin clicked the 'Update Bot Now' inline button."""
+    await callback.answer()
+    status_msg = await callback.message.reply("🔄 <b>Запуск обновления бота...</b>\n\n⏳ <code>git pull origin main</code>", parse_mode="HTML")
+    await run_update_process(status_msg, bot)
+
+
 @router.message(Command("update"))
-async def cmd_update(message: types.Message):
+async def cmd_update(message: types.Message, bot: Bot):
     """
     /update — pull latest code from GitHub, install deps if needed, and restart.
     Full auto-deploy from admin chat.
@@ -304,97 +315,7 @@ async def cmd_update(message: types.Message):
     logger.info(f"Update initiated by admin {message.from_user.id} ({admin_name})")
 
     status_msg = await message.answer("🔄 <b>Обновление бота...</b>\n\n⏳ <code>git pull origin main</code>", parse_mode="HTML")
-
-    bot_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-    # Step 1: git pull (async)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "pull", "origin", "main",
-            cwd=bot_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-        git_output = (stdout.decode(errors="replace") + stderr.decode(errors="replace")).strip()
-
-        if proc.returncode != 0:
-            await status_msg.edit_text(
-                f"❌ <b>Ошибка git pull:</b>\n<pre>{git_output}</pre>",
-                parse_mode="HTML",
-            )
-            return
-
-        # Check if already up to date
-        if "Already up to date" in git_output or "Already up-to-date" in git_output:
-            await status_msg.edit_text(
-                "✅ <b>Уже актуальная версия.</b>\nОбновление не требуется.",
-                parse_mode="HTML",
-            )
-            return
-
-    except asyncio.TimeoutError:
-        await status_msg.edit_text("❌ <b>Таймаут git pull</b> (30 сек.)", parse_mode="HTML")
-        return
-    except Exception as e:
-        await status_msg.edit_text(f"❌ <b>Ошибка при pull:</b> <code>{e}</code>", parse_mode="HTML")
-        return
-
-    # Step 2: pip install ONLY if requirements.txt was changed in this pull
-    req_changed = "requirements.txt" in git_output
-    pip_info = "не менялись (пропущено)"
-
-    # Detect python/pip executable (prefer venv if exists)
-    py_exec = sys.executable
-    for venv_path in [
-        os.path.join(bot_dir, "venv", "bin", "python"),
-        os.path.join(bot_dir, ".venv", "bin", "python"),
-        os.path.join(bot_dir, "venv", "Scripts", "python.exe"),
-    ]:
-        if os.path.isfile(venv_path):
-            py_exec = venv_path
-            break
-
-    if req_changed:
-        await status_msg.edit_text(
-            f"🔄 <b>Обновление бота...</b>\n\n"
-            f"✅ <code>git pull</code>:\n<pre>{git_output[:400]}</pre>\n\n"
-            f"⏳ Обновление зависимостей <code>requirements.txt</code>...",
-            parse_mode="HTML",
-        )
-        try:
-            pip_cmd = [
-                py_exec, "-m", "pip", "install",
-                "--no-cache-dir",
-                "--disable-pip-version-check",
-                "--break-system-packages",
-                "-r", "requirements.txt",
-            ]
-            pip_proc = await asyncio.create_subprocess_exec(
-                *pip_cmd,
-                cwd=bot_dir,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            p_stdout, p_stderr = await asyncio.wait_for(pip_proc.communicate(), timeout=60.0)
-            pip_out = (p_stdout.decode(errors="replace") + p_stderr.decode(errors="replace")).strip()
-            pip_info = pip_out.split("\n")[-1] if pip_out else "установлено"
-        except asyncio.TimeoutError:
-            pip_info = "⚠️ таймаут pip (продолжаем запуск)"
-        except Exception as e:
-            pip_info = f"⚠️ ошибка pip ({e})"
-
-    # Step 3: Report and restart
-    await status_msg.edit_text(
-        f"🔄 <b>Обновление завершено!</b>\n\n"
-        f"📦 <code>git pull</code>:\n<pre>{git_output[:400]}</pre>\n"
-        f"📦 <code>pip</code>: {pip_info}\n\n"
-        f"🔄 Перезапуск через 2 сек...",
-        parse_mode="HTML",
-    )
-
-    await asyncio.sleep(2)
-    os.execv(py_exec, [py_exec] + sys.argv)
+    await run_update_process(status_msg, bot)
 
 
 @router.message(Command("ban"))

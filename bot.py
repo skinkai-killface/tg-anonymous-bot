@@ -24,12 +24,17 @@ from middlewares import (
     MediaGroupMiddleware,
 )
 from database import init_db, close_db, migrate_from_json
+from auto_updater import auto_update_checker_loop
 
 logger = logging.getLogger(__name__)
 
+_updater_task: asyncio.Task | None = None
+
 
 async def on_startup(bot: Bot):
-    """Initialize database and notify admin chat that the bot has started."""
+    """Initialize database, start auto-updater loop, and notify admin chat."""
+    global _updater_task
+
     # Initialize SQLite database
     await init_db()
     logger.info("Database initialized.")
@@ -38,6 +43,9 @@ async def on_startup(bot: Bot):
     migrated = await migrate_from_json()
     if migrated:
         logger.info(f"Migrated {migrated} blocked users from JSON to SQLite.")
+
+    # Start background auto-updater task
+    _updater_task = asyncio.create_task(auto_update_checker_loop(bot))
 
     try:
         me = await bot.get_me()
@@ -52,7 +60,11 @@ async def on_startup(bot: Bot):
 
 
 async def on_shutdown(bot: Bot):
-    """Close database and notify admin chat that the bot is stopping."""
+    """Close database, cancel background tasks, and notify admin chat."""
+    global _updater_task
+    if _updater_task and not _updater_task.done():
+        _updater_task.cancel()
+
     try:
         await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
