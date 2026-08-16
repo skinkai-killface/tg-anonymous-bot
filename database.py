@@ -93,6 +93,7 @@ async def init_db() -> None:
             edited_text    TEXT DEFAULT '',
             media_json     TEXT DEFAULT '[]',
             status         TEXT DEFAULT 'pending',
+            is_anonymous   INTEGER DEFAULT 1,
             moderator_id   INTEGER DEFAULT NULL,
             moderator_name TEXT DEFAULT '',
             channel_msg_id INTEGER DEFAULT NULL,
@@ -103,15 +104,24 @@ async def init_db() -> None:
         );
     """)
 
+    # Attempt to add is_anonymous column to archive_posts if upgrading existing DB
+    try:
+        await _db.execute("ALTER TABLE archive_posts ADD COLUMN is_anonymous INTEGER DEFAULT 1")
+    except Exception:
+        pass
+
     # Seed stats rows if absent
     for key in ("total_suggestions", "approved", "rejected", "blocked"):
         await _db.execute(
             "INSERT OR IGNORE INTO stats (key, value) VALUES (?, 0)", (key,)
         )
 
-    # Seed default publish delay setting (0 seconds by default)
+    # Seed default settings
     await _db.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('publish_delay_seconds', '0')"
+    )
+    await _db.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('subcheck_enabled', '1')"
     )
 
     await _db.commit()
@@ -507,3 +517,17 @@ async def export_full_archive_json() -> str:
                 "moderated_at": r[15],
             })
         return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+async def set_post_anonymity(orig_msg_id: int, is_anonymous: bool) -> None:
+    """Toggle anonymity flag for a suggestion."""
+    val = 1 if is_anonymous else 0
+    await _db.execute("UPDATE archive_posts SET is_anonymous = ? WHERE orig_msg_id = ?", (val, orig_msg_id))
+    await _db.commit()
+
+
+async def get_post_anonymity(orig_msg_id: int) -> bool:
+    """Return True if suggestion should be published anonymously, False if with author credit."""
+    async with _db.execute("SELECT is_anonymous FROM archive_posts WHERE orig_msg_id = ?", (orig_msg_id,)) as cur:
+        row = await cur.fetchone()
+        return bool(row[0]) if row and row[0] is not None else True

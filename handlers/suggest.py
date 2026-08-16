@@ -5,13 +5,21 @@
 # --------------------------------------------------------
 
 import html
+import logging
 from aiogram import Router, types, Bot, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 
-from config import ADMIN_CHAT_ID
-from database import increment_stat, add_to_archive
+from config import ADMIN_CHAT_ID, CHANNEL_ID
+from database import (
+    increment_stat,
+    add_to_archive,
+    get_setting,
+    set_post_anonymity,
+    get_post_anonymity,
+)
 from album import save_album
 
+logger = logging.getLogger(__name__)
 router = Router()
 # Only process messages sent in private chat with the bot
 router.message.filter(F.chat.type == "private")
@@ -53,9 +61,145 @@ def moderation_keyboard(user_id: int, message_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def user_confirmation_keyboard(orig_msg_id: int, is_anon: bool) -> InlineKeyboardMarkup:
+    """Keyboard sent to user after submission allowing them to toggle author attribution."""
+    if is_anon:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👤 Указать меня (@username) в посте",
+                    callback_data=f"toggle_anon:non_anon:{orig_msg_id}",
+                )
+            ]
+        ])
+    else:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🎭 Опубликовать анонимно",
+                    callback_data=f"toggle_anon:anon:{orig_msg_id}",
+                )
+            ]
+        ])
+
+
+async def check_channel_subscription(bot: Bot, user_id: int) -> tuple[bool, str]:
+    """
+    Check if user is subscribed to CHANNEL_ID if subcheck is enabled.
+    Returns (is_subscribed, channel_link).
+    """
+    enabled = await get_setting("subcheck_enabled", "1")
+    if enabled == "0":
+        return True, ""
+
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        if member.status in ("creator", "administrator", "member", "restricted"):
+            return True, ""
+    except Exception as e:
+        logger.warning(f"Could not verify subscription for user {user_id}: {e}")
+        return True, ""  # Fail open if bot cannot inspect channel
+
+    # Fetch channel link
+    channel_link = "https://t.me"
+    try:
+        chat = await bot.get_chat(CHANNEL_ID)
+        if chat.username:
+            channel_link = f"https://t.me/{chat.username}"
+        elif chat.invite_link:
+            channel_link = chat.invite_link
+    except Exception:
+        pass
+
+    return False, channel_link
+
+
+async def notify_sub_required(message: types.Message, channel_link: str) -> None:
+    """Send subscription requirement prompt to the user."""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url=channel_link)],
+        [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_sub_cb")],
+    ])
+    await message.answer(
+        "📢 <b>Чтобы отправлять предложения, вам необходимо подписаться на наш канал!</b>\n\n"
+        "Подпишитесь по кнопке ниже и нажмите <b>«Проверить подписку»</b>:",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data == "check_sub_cb")
+async def on_check_subscription_callback(callback: types.CallbackQuery, bot: Bot):
+    """User pressed 'Check subscription' button."""
+    is_sub, link = await check_channel_subscription(bot, callback.from_user.id)
+    if is_sub:
+        await callback.answer("✅ Подписка подтверждена!", show_alert=True)
+        try:
+            await callback.message.edit_text(
+                "✅ <b>Подписка подтверждена!</b>\n\n"
+                "Теперь отправьте ваше предложение (текст, фото, видео, альбом и т.д.):",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    else:
+        await callback.answer("❌ Вы ещё не подписались на канал!", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("toggle_anon:"))
+async def on_toggle_anon_callback(callback: types.CallbackQuery):
+    """User clicked button to toggle anonymous / credited publication mode."""
+    parts = callback.data.split(":")
+    # parts: toggle_anon:anon/non_anon:orig_msg_id
+    if len(parts) < 3:
+        await callback.answer()
+        return
+
+    mode = parts[1]
+    orig_msg_id = int(parts[2])
+
+    if mode == "non_anon":
+        await set_post_anonymity(orig_msg_id, is_anonymous=False)
+        tag = f"@{callback.from_user.username}" if callback.from_user.username else callback.from_user.full_name
+        await callback.answer(f"Авторство будет указано: {tag}")
+        try:
+            await callback.message.edit_text(
+                f"✅ <b>Твоё предложение отправлено на модерацию!</b>\n\n"
+                f"👤 Режим: <b>С указанием автора ({html.escape(tag)})</b>\n\n"
+                f"<i>Хотите скрыть автора? Нажмите кнопку ниже:</i>",
+                parse_mode="HTML",
+                reply_markup=user_confirmation_keyboard(orig_msg_id, is_anon=False),
+            )
+        except Exception:
+            pass
+
+    else:
+        await set_post_anonymity(orig_msg_id, is_anonymous=True)
+        await callback.answer("Опубликуется анонимно 🎭")
+        try:
+            await callback.message.edit_text(
+                "✅ <b>Твоё предложение отправлено на модерацию!</b>\n\n"
+                "🎭 Режим: <b>Анонимно</b>\n\n"
+                "<i>Хотите указать авторство? Нажмите кнопку ниже:</i>",
+                parse_mode="HTML",
+                reply_markup=user_confirmation_keyboard(orig_msg_id, is_anon=True),
+            )
+        except Exception:
+            pass
+
+
 @router.message(F.text)
 async def handle_text(message: types.Message, bot: Bot):
     """Forward a text suggestion to the admin chat for moderation and archive."""
+    # Skip commands
+    if message.text.startswith("/"):
+        return
+
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
 
     sent = await bot.send_message(
@@ -77,12 +221,22 @@ async def handle_text(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твоё сообщение отправлено на модерацию!")
+    await message.answer(
+        "✅ <b>Твоё сообщение отправлено на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.sticker)
 async def handle_sticker(message: types.Message, bot: Bot):
     """Forward a sticker suggestion to the admin chat for moderation and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
 
     await bot.send_message(
@@ -106,7 +260,12 @@ async def handle_sticker(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твой стикер отправлен на модерацию!")
+    await message.answer(
+        "✅ <b>Твой стикер отправлен на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.media_group_id)
@@ -116,6 +275,12 @@ async def handle_album(message: types.Message, bot: Bot, album: list[types.Messa
         album = [message]
 
     first_msg = album[0]
+
+    is_sub, link = await check_channel_subscription(bot, first_msg.from_user.id)
+    if not is_sub:
+        await notify_sub_required(first_msg, link)
+        return
+
     author = get_author_header(first_msg.from_user)
     user_caption = first_msg.caption or ""
     header = f"📩 <b>Новое предложение (альбом: {len(album)} шт.)</b>\n{author}"
@@ -158,12 +323,22 @@ async def handle_album(message: types.Message, bot: Bot, album: list[types.Messa
             orig_msg_id=first_msg.message_id,
             admin_msg_id=ctrl_msg.message_id,
         )
-        await first_msg.answer("✅ Твой альбом отправлен на модерацию!")
+        await first_msg.answer(
+            f"✅ <b>Твой альбом ({len(album)} файлов) отправлен на модерацию!</b>\n\n"
+            f"🎭 Режим публикации: <b>Анонимно</b>",
+            parse_mode="HTML",
+            reply_markup=user_confirmation_keyboard(first_msg.message_id, is_anon=True),
+        )
 
 
 @router.message(F.photo)
 async def handle_photo(message: types.Message, bot: Bot):
     """Forward a single photo suggestion to admin chat and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (фото)</b>\n{author}"
@@ -189,12 +364,22 @@ async def handle_photo(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твой кадр отправлен на модерацию!")
+    await message.answer(
+        "✅ <b>Твой кадр отправлен на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.video)
 async def handle_video(message: types.Message, bot: Bot):
     """Forward a single video suggestion to admin chat and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (видео)</b>\n{author}"
@@ -218,12 +403,22 @@ async def handle_video(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твоё видео отправлено на модерацию!")
+    await message.answer(
+        "✅ <b>Твоё видео отправлено на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.animation)
 async def handle_animation(message: types.Message, bot: Bot):
     """Forward a GIF animation suggestion to admin chat and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (GIF)</b>\n{author}"
@@ -247,12 +442,22 @@ async def handle_animation(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твоя GIF отправлена на модерацию!")
+    await message.answer(
+        "✅ <b>Твоя GIF отправлена на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.voice)
 async def handle_voice(message: types.Message, bot: Bot):
     """Forward a voice message suggestion to admin chat and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (голосовое)</b>\n{author}"
@@ -276,12 +481,22 @@ async def handle_voice(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твоё голосовое сообщение отправлено на модерацию!")
+    await message.answer(
+        "✅ <b>Твоё голосовое сообщение отправлено на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.video_note)
 async def handle_video_note(message: types.Message, bot: Bot):
     """Forward a video note (circle) suggestion to admin chat and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
 
     await bot.send_message(
@@ -305,12 +520,22 @@ async def handle_video_note(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твой кружочек отправлен на модерацию!")
+    await message.answer(
+        "✅ <b>Твой кружочек отправлен на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.audio)
 async def handle_audio(message: types.Message, bot: Bot):
     """Forward an audio suggestion to admin chat and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (аудио)</b>\n{author}"
@@ -334,12 +559,22 @@ async def handle_audio(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твоё аудио отправлено на модерацию!")
+    await message.answer(
+        "✅ <b>Твоё аудио отправлено на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )
 
 
 @router.message(F.document)
 async def handle_document(message: types.Message, bot: Bot):
     """Forward a document suggestion to admin chat and archive."""
+    is_sub, link = await check_channel_subscription(bot, message.from_user.id)
+    if not is_sub:
+        await notify_sub_required(message, link)
+        return
+
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (документ)</b>\n{author}"
@@ -363,4 +598,9 @@ async def handle_document(message: types.Message, bot: Bot):
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
     )
-    await message.answer("✅ Твой документ отправлен на модерацию!")
+    await message.answer(
+        "✅ <b>Твой документ отправлен на модерацию!</b>\n\n"
+        "🎭 Режим публикации: <b>Анонимно</b>",
+        parse_mode="HTML",
+        reply_markup=user_confirmation_keyboard(message.message_id, is_anon=True),
+    )

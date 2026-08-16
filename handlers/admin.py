@@ -98,6 +98,7 @@ async def cmd_help(message: types.Message):
         "• /archive — архив всех предложений (статистика, просмотр, экспорт)\n"
         "• /backup — скачать резервную копию базы данных SQLite\n"
         "• /broadcast <code>&lt;текст&gt;</code> — рассылка всем пользователям бота\n"
+        "• /subcheck <code>[on/off]</code> — включить/выключить обязательную подписку на канал\n"
         "• /delay <code>[сек]</code> — задержка между автопубликациями в канал\n"
         "• /restart — мягкий перезапуск бота\n"
         "• /update — автообновление (git pull + pip + restart)\n"
@@ -392,6 +393,37 @@ async def cmd_delay(message: types.Message):
         await message.answer("✅ Задержка отключена: посты публикуются <b>мгновенно</b> при одобрении.", parse_mode="HTML")
     else:
         await message.answer(f"✅ Установлена задержка публикации: <b>{sec} сек.</b> ({round(sec/60, 1)} мин.)", parse_mode="HTML")
+
+
+@router.message(Command("subcheck"))
+async def cmd_subcheck(message: types.Message):
+    """
+    /subcheck [on/off] — toggle mandatory channel subscription check.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        current = await get_setting("subcheck_enabled", "1")
+        status_str = "ВКЛЮЧЕНА ✅" if current == "1" else "ВЫКЛЮЧЕНА ❌"
+        await message.answer(
+            f"🔒 <b>Обязательная подписка на канал:</b> {status_str}\n\n"
+            f"Чтобы включить: <code>/subcheck on</code>\n"
+            f"Чтобы выключить: <code>/subcheck off</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    val = args[1].strip().lower()
+    if val in ("on", "1", "true", "вкл"):
+        await set_setting("subcheck_enabled", "1")
+        await message.answer("✅ Обязательная подписка на канал <b>ВКЛЮЧЕНА</b>.", parse_mode="HTML")
+    elif val in ("off", "0", "false", "выкл"):
+        await set_setting("subcheck_enabled", "0")
+        await message.answer("❌ Обязательная подписка на канал <b>ВЫКЛЮЧЕНА</b>.", parse_mode="HTML")
+    else:
+        await message.answer("⚠️ Использование: <code>/subcheck on</code> или <code>/subcheck off</code>", parse_mode="HTML")
 
 
 @router.message(Command("restart"))
