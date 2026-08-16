@@ -11,7 +11,13 @@ from aiogram.filters import Command
 from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 from config import CHANNEL_ID, ADMIN_CHAT_ID
-from database import block_user, increment_stat, record_moderation
+from database import (
+    block_user,
+    increment_stat,
+    record_moderation,
+    update_archive_status,
+    update_archive_text,
+)
 from album import pop_album, get_album
 
 router = Router()
@@ -201,6 +207,7 @@ async def _apply_edit(
                     text=new_text + "\n<i>[✏️ Текст отредактирован]</i>",
                     parse_mode="HTML",
                 )
+                await update_archive_text(new_text=new_text, admin_msg_id=target_msg_id)
                 await message.reply("✅ Текст успешно обновлён!")
                 return
             except Exception:
@@ -214,6 +221,7 @@ async def _apply_edit(
                     caption=new_text + "\n<i>[✏️ Подпись отредактирована]</i>",
                     parse_mode="HTML",
                 )
+                await update_archive_text(new_text=new_text, admin_msg_id=target_msg_id)
                 await message.reply("✅ Подпись успешно обновлена!")
                 return
             except Exception as e2:
@@ -231,12 +239,14 @@ async def _apply_edit(
             header = lines[0] if len(lines) > 1 else ""
             full = f"{header}\n\n{new_text}\n<i>[✏️ Текст отредактирован]</i>" if header else f"{new_text}\n<i>[✏️ Текст отредактирован]</i>"
             await target.edit_text(full, parse_mode="HTML", reply_markup=target.reply_markup)
+            await update_archive_text(new_text=new_text, admin_msg_id=target.message_id)
             await message.reply("✅ Текст обновлён!")
         elif target.caption is not None:
             lines = (target.caption or "").split("\n\n", 1)
             header = lines[0] if len(lines) > 1 else ""
             full = f"{header}\n\n{new_text}\n<i>[✏️ Подпись отредактирована]</i>" if header else f"{new_text}\n<i>[✏️ Подпись отредактирована]</i>"
             await target.edit_caption(caption=full, parse_mode="HTML", reply_markup=target.reply_markup)
+            await update_archive_text(new_text=new_text, admin_msg_id=target.message_id)
             await message.reply("✅ Подпись обновлена!")
         else:
             await message.reply("⚠️ Нельзя изменить текст у этого типа сообщения.")
@@ -359,9 +369,15 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
                 parse_mode="HTML",
             )
 
-        # Record stats
+        # Record stats & archive
         await increment_stat("approved")
         await record_moderation(callback.from_user.id, callback.from_user.full_name, "approved")
+        await update_archive_status(
+            orig_msg_id=orig_msg_id,
+            status="approved",
+            moderator_id=callback.from_user.id,
+            moderator_name=callback.from_user.full_name,
+        )
 
         # Update the admin message to show it was approved
         admin_name = callback.from_user.full_name
@@ -403,6 +419,12 @@ async def on_reject(callback: types.CallbackQuery, bot: Bot):
         admin_name = callback.from_user.full_name
         await increment_stat("rejected")
         await record_moderation(callback.from_user.id, admin_name, "rejected")
+        await update_archive_status(
+            orig_msg_id=orig_msg_id,
+            status="rejected",
+            moderator_id=callback.from_user.id,
+            moderator_name=admin_name,
+        )
         await mark_moderation_message(source_msg, f"❌ <b>Отклонено</b> — {admin_name}")
 
         try:
@@ -440,6 +462,12 @@ async def on_block(callback: types.CallbackQuery, bot: Bot):
         await block_user(user_id, reason=f"Blocked by {admin_name}")
         await increment_stat("blocked")
         await record_moderation(callback.from_user.id, admin_name, "blocked")
+        await update_archive_status(
+            orig_msg_id=orig_msg_id,
+            status="blocked",
+            moderator_id=callback.from_user.id,
+            moderator_name=admin_name,
+        )
         await mark_moderation_message(source_msg, f"🚫 <b>Заблокирован и отклонён</b> — {admin_name}")
 
         try:

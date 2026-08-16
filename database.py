@@ -82,6 +82,25 @@ async def init_db() -> None:
             payload_json TEXT,
             created_at   TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS archive_posts (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER,
+            user_name      TEXT DEFAULT '',
+            user_handle    TEXT DEFAULT '',
+            content_type   TEXT DEFAULT 'text',
+            text_content   TEXT DEFAULT '',
+            edited_text    TEXT DEFAULT '',
+            media_json     TEXT DEFAULT '[]',
+            status         TEXT DEFAULT 'pending',
+            moderator_id   INTEGER DEFAULT NULL,
+            moderator_name TEXT DEFAULT '',
+            channel_msg_id INTEGER DEFAULT NULL,
+            orig_msg_id    INTEGER DEFAULT NULL,
+            admin_msg_id   INTEGER DEFAULT NULL,
+            created_at     TEXT DEFAULT '',
+            moderated_at   TEXT DEFAULT ''
+        );
     """)
 
     # Seed stats rows if absent
@@ -304,3 +323,187 @@ async def get_queue_length() -> int:
     async with _db.execute("SELECT COUNT(*) FROM post_queue") as cur:
         row = await cur.fetchone()
         return row[0] if row else 0
+
+
+# ────────────────────────── Archive API ──────────────────────────
+
+async def add_to_archive(
+    user_id: int,
+    user_name: str,
+    user_handle: str,
+    content_type: str,
+    text_content: str,
+    media_list: list[dict],
+    orig_msg_id: int,
+    admin_msg_id: int | None = None,
+) -> int:
+    """Save a suggestion into the archive table with full metadata."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    media_str = json.dumps(media_list, ensure_ascii=False) if media_list else "[]"
+
+    cur = await _db.execute(
+        """
+        INSERT INTO archive_posts (
+            user_id, user_name, user_handle, content_type,
+            text_content, media_json, status,
+            orig_msg_id, admin_msg_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        """,
+        (
+            user_id,
+            user_name,
+            user_handle,
+            content_type,
+            text_content,
+            media_str,
+            orig_msg_id,
+            admin_msg_id,
+            now,
+        ),
+    )
+    await _db.commit()
+    return cur.lastrowid
+
+
+async def update_archive_status(
+    orig_msg_id: int,
+    status: str,
+    moderator_id: int | None = None,
+    moderator_name: str = "",
+    channel_msg_id: int | None = None,
+) -> None:
+    """Update status of an archived suggestion when moderated."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await _db.execute(
+        """
+        UPDATE archive_posts
+        SET status = ?, moderator_id = ?, moderator_name = ?, channel_msg_id = ?, moderated_at = ?
+        WHERE orig_msg_id = ?
+        """,
+        (status, moderator_id, moderator_name, channel_msg_id, now, orig_msg_id),
+    )
+    await _db.commit()
+
+
+async def update_archive_text(
+    new_text: str,
+    admin_msg_id: int | None = None,
+    orig_msg_id: int | None = None,
+) -> None:
+    """Update edited text in the archive."""
+    if admin_msg_id:
+        await _db.execute(
+            "UPDATE archive_posts SET edited_text = ? WHERE admin_msg_id = ?",
+            (new_text, admin_msg_id),
+        )
+    elif orig_msg_id:
+        await _db.execute(
+            "UPDATE archive_posts SET edited_text = ? WHERE orig_msg_id = ?",
+            (new_text, orig_msg_id),
+        )
+    await _db.commit()
+
+
+async def get_archive_stats() -> dict[str, int]:
+    """Return summary counts of archive posts by status."""
+    stats = {"total": 0, "approved": 0, "rejected": 0, "blocked": 0, "pending": 0}
+    async with _db.execute("SELECT status, COUNT(*) FROM archive_posts GROUP BY status") as cur:
+        async for row in cur:
+            st, cnt = row[0], row[1]
+            if st in stats:
+                stats[st] = cnt
+            stats["total"] += cnt
+    return stats
+
+
+async def get_recent_archive(limit: int = 5) -> list[dict]:
+    """Return recent archived posts."""
+    async with _db.execute(
+        "SELECT id, user_id, user_name, user_handle, content_type, text_content, edited_text, status, created_at FROM archive_posts ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+        return [
+            {
+                "id": r[0],
+                "user_id": r[1],
+                "user_name": r[2],
+                "user_handle": r[3],
+                "content_type": r[4],
+                "text_content": r[5],
+                "edited_text": r[6],
+                "status": r[7],
+                "created_at": r[8],
+            }
+            for r in rows
+        ]
+
+
+async def get_archive_by_id(archive_id: int) -> dict | None:
+    """Get full details of a specific archived post."""
+    async with _db.execute(
+        """
+        SELECT id, user_id, user_name, user_handle, content_type,
+               text_content, edited_text, media_json, status,
+               moderator_id, moderator_name, channel_msg_id,
+               orig_msg_id, admin_msg_id, created_at, moderated_at
+        FROM archive_posts WHERE id = ?
+        """,
+        (archive_id,),
+    ) as cur:
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "user_name": row[2],
+            "user_handle": row[3],
+            "content_type": row[4],
+            "text_content": row[5],
+            "edited_text": row[6],
+            "media_list": json.loads(row[7]) if row[7] else [],
+            "status": row[8],
+            "moderator_id": row[9],
+            "moderator_name": row[10],
+            "channel_msg_id": row[11],
+            "orig_msg_id": row[12],
+            "admin_msg_id": row[13],
+            "created_at": row[14],
+            "moderated_at": row[15],
+        }
+
+
+async def export_full_archive_json() -> str:
+    """Export all archive rows as a formatted JSON string."""
+    async with _db.execute(
+        """
+        SELECT id, user_id, user_name, user_handle, content_type,
+               text_content, edited_text, media_json, status,
+               moderator_id, moderator_name, channel_msg_id,
+               orig_msg_id, admin_msg_id, created_at, moderated_at
+        FROM archive_posts ORDER BY id ASC
+        """
+    ) as cur:
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "id": r[0],
+                "user_id": r[1],
+                "user_name": r[2],
+                "user_handle": r[3],
+                "content_type": r[4],
+                "text_content": r[5],
+                "edited_text": r[6],
+                "media": json.loads(r[7]) if r[7] else [],
+                "status": r[8],
+                "moderator_id": r[9],
+                "moderator_name": r[10],
+                "channel_msg_id": r[11],
+                "orig_msg_id": r[12],
+                "admin_msg_id": r[13],
+                "created_at": r[14],
+                "moderated_at": r[15],
+            })
+        return json.dumps(result, ensure_ascii=False, indent=2)

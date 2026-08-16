@@ -27,6 +27,10 @@ from database import (
     set_user_inactive,
     get_setting,
     set_setting,
+    get_archive_stats,
+    get_recent_archive,
+    get_archive_by_id,
+    export_full_archive_json,
 )
 from config import ADMIN_CHAT_ID, BOT_VERSION
 
@@ -91,6 +95,7 @@ async def cmd_help(message: types.Message):
         "⚡ <b>Управление и статус:</b>\n"
         "• /ping — проверка задержки и отклика бота\n"
         "• /stats — общая статистика и активность модераторов\n"
+        "• /archive — архив всех предложений (статистика, просмотр, экспорт)\n"
         "• /backup — скачать резервную копию базы данных SQLite\n"
         "• /broadcast <code>&lt;текст&gt;</code> — рассылка всем пользователям бота\n"
         "• /delay <code>[сек]</code> — задержка между автопубликациями в канал\n"
@@ -150,6 +155,120 @@ async def cmd_backup(message: types.Message):
             f"👥 Пользователей в базе: <code>{users_count}</code>\n"
             f"🏷 Версия бота: <code>v{BOT_VERSION}</code>"
         ),
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("archive"))
+async def cmd_archive(message: types.Message, bot: Bot):
+    """
+    /archive — show archive statistics and last 5 suggestions.
+    /archive <id> — inspect full details of an archived post (and resend media).
+    /archive export — export the entire archive as JSON document.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    args = message.text.split(maxsplit=1)
+    subcmd = args[1].strip() if len(args) > 1 else ""
+
+    if subcmd == "export":
+        json_data = await export_full_archive_json()
+        export_file = "archive_export.json"
+        with open(export_file, "w", encoding="utf-8") as f:
+            f.write(json_data)
+
+        doc = FSInputFile(export_file, filename=f"archive_export_{int(time.time())}.json")
+        stats = await get_archive_stats()
+        await message.answer_document(
+            document=doc,
+            caption=(
+                f"🗄 <b>Экспорт архива постов</b>\n\n"
+                f"📊 Всего постов: <code>{stats['total']}</code>\n"
+                f"✅ Одобрено: <code>{stats['approved']}</code>\n"
+                f"❌ Отклонено: <code>{stats['rejected']}</code>\n"
+                f"🚫 Заблокировано: <code>{stats['blocked']}</code>"
+            ),
+            parse_mode="HTML",
+        )
+        try:
+            os.remove(export_file)
+        except Exception:
+            pass
+        return
+
+    if subcmd.isdigit():
+        archive_id = int(subcmd)
+        item = await get_archive_by_id(archive_id)
+        if not item:
+            await message.reply(f"⚠️ Архивный пост #{archive_id} не найден.", parse_mode="HTML")
+            return
+
+        status_emoji = {
+            "approved": "✅ Одобрено",
+            "rejected": "❌ Отклонено",
+            "blocked": "🚫 Заблокирован",
+            "pending": "⏳ На модерации",
+        }.get(item["status"], item["status"])
+
+        author_tag = f"@{item['user_handle']}" if item['user_handle'] else "нет юзернейма"
+        mod_info = f"{item['moderator_name']} (ID: {item['moderator_id']})" if item['moderator_id'] else "—"
+
+        text_block = f"📝 <b>Текст:</b>\n{item['text_content']}" if item['text_content'] else "<i>(без текста)</i>"
+        if item['edited_text']:
+            text_block += f"\n\n✏️ <b>Отредактированный текст:</b>\n{item['edited_text']}"
+
+        card = (
+            f"🗄 <b>Архивный пост #{item['id']}</b>\n\n"
+            f"👤 <b>Автор:</b> <a href=\"tg://user?id={item['user_id']}\">{item['user_name']}</a> [ID: <code>{item['user_id']}</code>, {author_tag}]\n"
+            f"📂 <b>Тип контента:</b> <code>{item['content_type']}</code>\n"
+            f"⚖️ <b>Статус:</b> {status_emoji}\n"
+            f"👮 <b>Модератор:</b> {mod_info}\n"
+            f"📅 <b>Создан:</b> <code>{item['created_at']}</code>\n"
+            f"⏱ <b>Модерирован:</b> <code>{item['moderated_at'] or '—'}</code>\n\n"
+            f"{text_block}"
+        )
+
+        await message.answer(card, parse_mode="HTML")
+
+        # Also resend media attachments if available
+        media_list = item.get("media_list", [])
+        if media_list:
+            try:
+                if item["content_type"] == "photo":
+                    await bot.send_photo(chat_id=message.chat.id, photo=media_list[0]["file_id"], caption=f"📸 Медиа из архива #{item['id']}")
+                elif item["content_type"] == "video":
+                    await bot.send_video(chat_id=message.chat.id, video=media_list[0]["file_id"], caption=f"🎬 Видео из архива #{item['id']}")
+                elif item["content_type"] == "voice":
+                    await bot.send_voice(chat_id=message.chat.id, voice=media_list[0]["file_id"], caption=f"🎙 Голосовое из архива #{item['id']}")
+                elif item["content_type"] == "document":
+                    await bot.send_document(chat_id=message.chat.id, document=media_list[0]["file_id"], caption=f"📄 Документ из архива #{item['id']}")
+            except Exception as e:
+                logger.warning(f"Could not resend archive media #{item['id']}: {e}")
+        return
+
+    # Default /archive summary
+    stats = await get_archive_stats()
+    recent = await get_recent_archive(5)
+
+    recent_lines = []
+    for r in recent:
+        st_icon = {"approved": "✅", "rejected": "❌", "blocked": "🚫", "pending": "⏳"}.get(r["status"], "▫️")
+        snippet = (r["text_content"][:30] + "...") if r["text_content"] else f"[{r['content_type']}]"
+        recent_lines.append(f"#{r['id']} {st_icon} <b>{r['user_name']}</b>: <i>{snippet}</i> (<code>{r['created_at']}</code>)")
+
+    recent_text = "\n".join(recent_lines) if recent_lines else "<i>Архив пока пуст</i>"
+
+    await message.answer(
+        f"🗄 <b>Архив предложки</b>\n\n"
+        f"📊 <b>Всего постов:</b> <code>{stats['total']}</code>\n"
+        f"✅ Одобрено: <code>{stats['approved']}</code> | ❌ Отклонено: <code>{stats['rejected']}</code>\n"
+        f"🚫 Заблокировано: <code>{stats['blocked']}</code> | ⏳ На модерации: <code>{stats['pending']}</code>\n\n"
+        f"📋 <b>Последние записи:</b>\n"
+        f"{recent_text}\n\n"
+        f"💡 <b>Команды архива:</b>\n"
+        f"• <code>/archive &lt;ID&gt;</code> — открыть полный пост с медиа\n"
+        f"• <code>/archive export</code> — скачать весь архив в JSON",
         parse_mode="HTML",
     )
 
