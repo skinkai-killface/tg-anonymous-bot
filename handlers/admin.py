@@ -13,8 +13,21 @@ import subprocess
 import logging
 from aiogram import Router, types, Bot, F
 from aiogram.filters import Command
+from aiogram.types import FSInputFile
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
-from database import block_user, unblock_user, get_blocked_list, get_stats, get_moderator_stats
+from database import (
+    block_user,
+    unblock_user,
+    get_blocked_list,
+    get_stats,
+    get_moderator_stats,
+    get_all_active_users,
+    get_users_count,
+    set_user_inactive,
+    get_setting,
+    set_setting,
+)
 from config import ADMIN_CHAT_ID, BOT_VERSION
 
 router = Router()
@@ -78,9 +91,14 @@ async def cmd_help(message: types.Message):
         "⚡ <b>Управление и статус:</b>\n"
         "• /ping — проверка задержки и отклика бота\n"
         "• /stats — общая статистика и активность модераторов\n"
+        "• /backup — скачать резервную копию базы данных SQLite\n"
+        "• /broadcast <code>&lt;текст&gt;</code> — рассылка всем пользователям бота\n"
+        "• /delay <code>[сек]</code> — задержка между автопубликациями в канал\n"
         "• /restart — мягкий перезапуск бота\n"
         "• /update — автообновление (git pull + pip + restart)\n"
         "• /help — список всех команд\n\n"
+        "✏️ <b>Редактирование предложки:</b>\n"
+        "• Ответьте на предложку командой <code>/edit Новый текст</code> чтобы изменить текст перед публикацией\n\n"
         "🚫 <b>Модерация пользователей:</b>\n"
         "• /ban <code>&lt;id&gt;</code> — заблокировать по ID\n"
         "• /unban <code>&lt;id&gt;</code> — разблокировать по ID\n"
@@ -107,6 +125,156 @@ async def cmd_ping(message: types.Message):
     await msg.edit_text(f"🏓 <b>Понг!</b>\n⏱ Задержка: <code>{latency} ms</code>\n🏷 Версия: <code>v{BOT_VERSION}</code>", parse_mode="HTML")
 
 
+@router.message(Command("backup"))
+async def cmd_backup(message: types.Message):
+    """
+    /backup — send bot_data.db file directly to the admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    db_path = "bot_data.db"
+    if not os.path.exists(db_path):
+        await message.answer("⚠️ Файл базы данных <code>bot_data.db</code> пока не создан.", parse_mode="HTML")
+        return
+
+    size_kb = round(os.path.getsize(db_path) / 1024, 2)
+    users_count = await get_users_count()
+
+    doc = FSInputFile(db_path, filename="bot_data.db")
+    await message.answer_document(
+        document=doc,
+        caption=(
+            f"💾 <b>Резервная копия базы данных</b>\n\n"
+            f"📦 Размер: <code>{size_kb} KB</code>\n"
+            f"👥 Пользователей в базе: <code>{users_count}</code>\n"
+            f"🏷 Версия бота: <code>v{BOT_VERSION}</code>"
+        ),
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message, bot: Bot):
+    """
+    /broadcast <text> (or reply to a media/text) — send a broadcast to all registered users.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    # Check if replying to a message or has text argument
+    reply = message.reply_to_message
+    broadcast_text = ""
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1:
+        broadcast_text = args[1].strip()
+
+    if not broadcast_text and not reply:
+        await message.answer(
+            "ℹ️ <b>Использование рассылки:</b>\n\n"
+            "1. <code>/broadcast Ваш текст</code>\n"
+            "2. Или ответьте (Reply) командой <code>/broadcast</code> на фото/видео/пост, который хотите разослать.",
+            parse_mode="HTML",
+        )
+        return
+
+    users = await get_all_active_users()
+    if not users:
+        await message.answer("⚠️ В базе пока нет зарегистрированных пользователей для рассылки.")
+        return
+
+    status_msg = await message.answer(f"📢 <b>Начинаю рассылку...</b>\n👥 Всего получателей: <b>{len(users)}</b>", parse_mode="HTML")
+
+    sent = 0
+    blocked = 0
+    errors = 0
+
+    for idx, user_id in enumerate(users):
+        try:
+            if reply:
+                # Copy original replied message (supports photos, videos, formatting, buttons)
+                await bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=reply.chat.id,
+                    message_id=reply.message_id,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=broadcast_text,
+                    parse_mode="HTML",
+                )
+            sent += 1
+        except TelegramForbiddenError:
+            # User blocked the bot
+            blocked += 1
+            await set_user_inactive(user_id)
+        except TelegramBadRequest as e:
+            if "chat not found" in str(e).lower() or "user is deactivated" in str(e).lower():
+                blocked += 1
+                await set_user_inactive(user_id)
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+        # Periodic status update every 25 users
+        if idx > 0 and idx % 25 == 0:
+            try:
+                await status_msg.edit_text(
+                    f"📢 <b>Рассылка в процессе...</b>\n"
+                    f"Прогресс: <b>{idx}/{len(users)}</b>\n"
+                    f"✅ Доставлено: {sent} | 🚫 Заблокировали: {blocked}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        # Telegram rate-limit delay (~25 msgs/sec)
+        await asyncio.sleep(0.04)
+
+    await status_msg.edit_text(
+        f"📢 <b>Рассылка завершена!</b>\n\n"
+        f"👥 Всего адресатов: <b>{len(users)}</b>\n"
+        f"✅ Успешно доставлено: <b>{sent}</b>\n"
+        f"🚫 Заблокировали бота: <b>{blocked}</b>\n"
+        f"⚠️ Ошибок: <b>{errors}</b>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("delay"))
+async def cmd_delay(message: types.Message):
+    """
+    /delay [seconds] — configure publishing delay between approved posts.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        current = await get_setting("publish_delay_seconds", "0")
+        await message.answer(
+            f"⏱ <b>Текущая задержка публикации:</b> <code>{current} сек.</code>\n\n"
+            f"Чтобы изменить: <code>/delay 300</code> (например, 300 сек = 5 мин).\n"
+            f"Чтобы отключить (мгновенно): <code>/delay 0</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    new_val = args[1].strip()
+    if not new_val.isdigit():
+        await message.answer("⚠️ Значение задержки должно быть числом секунд (например: <code>/delay 60</code>).", parse_mode="HTML")
+        return
+
+    sec = int(new_val)
+    await set_setting("publish_delay_seconds", str(sec))
+    if sec == 0:
+        await message.answer("✅ Задержка отключена: посты публикуются <b>мгновенно</b> при одобрении.", parse_mode="HTML")
+    else:
+        await message.answer(f"✅ Установлена задержка публикации: <b>{sec} сек.</b> ({round(sec/60, 1)} мин.)", parse_mode="HTML")
+
+
 @router.message(Command("restart"))
 async def cmd_restart(message: types.Message):
     """
@@ -120,7 +288,6 @@ async def cmd_restart(message: types.Message):
     logger.info(f"Restart initiated by admin {message.from_user.id} ({message.from_user.full_name})")
     await asyncio.sleep(1)
 
-    # Re-execute the current python process
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
@@ -229,6 +396,7 @@ async def cmd_update(message: types.Message):
     await asyncio.sleep(2)
     os.execv(py_exec, [py_exec] + sys.argv)
 
+
 @router.message(Command("ban"))
 async def cmd_ban(message: types.Message):
     """
@@ -293,8 +461,7 @@ async def cmd_banlist(message: types.Message):
 @router.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     """
-    /stats — show bot statistics (suggestions, approvals, rejections, blocks, per-moderator).
-    Only works in the admin chat.
+    /stats — show bot statistics.
     """
     if message.chat.id != ADMIN_CHAT_ID:
         return
@@ -305,9 +472,11 @@ async def cmd_stats(message: types.Message):
     rejected = stats.get("rejected", 0)
     blocked = stats.get("blocked", 0)
     pending = total - approved - rejected - blocked
+    users_count = await get_users_count()
 
     lines = [
         "📊 <b>Статистика бота</b>\n",
+        f"👥 Пользователей в базе: <b>{users_count}</b>",
         f"📩 Всего предложений: <b>{total}</b>",
         f"✅ Одобрено: <b>{approved}</b>",
         f"❌ Отклонено: <b>{rejected}</b>",

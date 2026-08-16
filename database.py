@@ -9,14 +9,19 @@ SQLite-backed storage for the suggestion bot.
 
 Tables
 ------
+- users           : user_id (PK), username, full_name, first_seen, is_active
 - blocked_users   : user_id (PK), reason, blocked_at
 - stats           : key (PK), value  (total_suggestions, approved, rejected, blocked)
 - moderator_stats : admin_id (PK), approved, rejected, blocked
+- settings        : key (PK), value
+- post_queue      : id (PK AUTO), user_id, message_type, content_json, created_at
 """
 
-import aiosqlite
+import json
 import logging
 from datetime import datetime
+from typing import Any
+import aiosqlite
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +43,18 @@ async def init_db() -> None:
     _db.row_factory = aiosqlite.Row
 
     await _db.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id    INTEGER PRIMARY KEY,
+            username   TEXT    DEFAULT '',
+            full_name  TEXT    DEFAULT '',
+            first_seen TEXT    DEFAULT '',
+            is_active  INTEGER DEFAULT 1
+        );
+
         CREATE TABLE IF NOT EXISTS blocked_users (
-            user_id   INTEGER PRIMARY KEY,
-            reason    TEXT    DEFAULT '',
-            blocked_at TEXT   DEFAULT ''
+            user_id    INTEGER PRIMARY KEY,
+            reason     TEXT    DEFAULT '',
+            blocked_at TEXT    DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS stats (
@@ -50,11 +63,24 @@ async def init_db() -> None:
         );
 
         CREATE TABLE IF NOT EXISTS moderator_stats (
-            admin_id INTEGER PRIMARY KEY,
-            admin_name TEXT DEFAULT '',
-            approved INTEGER DEFAULT 0,
-            rejected INTEGER DEFAULT 0,
-            blocked  INTEGER DEFAULT 0
+            admin_id   INTEGER PRIMARY KEY,
+            admin_name TEXT    DEFAULT '',
+            approved   INTEGER DEFAULT 0,
+            rejected   INTEGER DEFAULT 0,
+            blocked    INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS post_queue (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER,
+            post_type    TEXT,
+            payload_json TEXT,
+            created_at   TEXT
         );
     """)
 
@@ -63,6 +89,12 @@ async def init_db() -> None:
         await _db.execute(
             "INSERT OR IGNORE INTO stats (key, value) VALUES (?, 0)", (key,)
         )
+
+    # Seed default publish delay setting (0 seconds by default)
+    await _db.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('publish_delay_seconds', '0')"
+    )
+
     await _db.commit()
 
     # Fill in-memory cache
@@ -79,6 +111,42 @@ async def close_db() -> None:
     if _db:
         await _db.close()
         _db = None
+
+
+# ─────────────────────── users (for broadcast) ──────────────────────
+
+async def register_user(user_id: int, username: str = "", full_name: str = "") -> None:
+    """Register or update user in SQLite."""
+    now = datetime.now().isoformat()
+    await _db.execute(
+        """INSERT INTO users (user_id, username, full_name, first_seen, is_active)
+           VALUES (?, ?, ?, ?, 1)
+           ON CONFLICT(user_id) DO UPDATE SET
+               username = excluded.username,
+               full_name = excluded.full_name,
+               is_active = 1""",
+        (user_id, username or "", full_name or "", now),
+    )
+    await _db.commit()
+
+
+async def get_all_active_users() -> list[int]:
+    """Return all active user IDs for broadcasting."""
+    async with _db.execute("SELECT user_id FROM users WHERE is_active = 1") as cur:
+        return [row[0] async for row in cur]
+
+
+async def get_users_count() -> int:
+    """Return total count of registered users."""
+    async with _db.execute("SELECT COUNT(*) FROM users") as cur:
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+
+async def set_user_inactive(user_id: int) -> None:
+    """Mark user inactive when bot is blocked."""
+    await _db.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
+    await _db.commit()
 
 
 # ─────────────────────── migrate from JSON ──────────────────────────
@@ -112,7 +180,10 @@ async def migrate_from_json(json_path: str = "blocked_users.json") -> int:
     await _db.commit()
 
     # Rename old file so it's not re-imported
-    os.rename(json_path, json_path + ".migrated")
+    try:
+        os.rename(json_path, json_path + ".migrated")
+    except Exception:
+        pass
     logger.info("Migrated %d blocked users from JSON → SQLite", count)
     return count
 
@@ -188,3 +259,48 @@ async def get_moderator_stats() -> list[tuple[int, str, int, int, int]]:
         "SELECT admin_id, admin_name, approved, rejected, blocked FROM moderator_stats ORDER BY (approved+rejected+blocked) DESC"
     ) as cur:
         return [(row[0], row[1], row[2], row[3], row[4]) async for row in cur]
+
+
+# ────────────────────── settings & post queue ───────────────────────
+
+async def get_setting(key: str, default: str = "") -> str:
+    async with _db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
+        row = await cur.fetchone()
+        return row[0] if row else default
+
+
+async def set_setting(key: str, value: str) -> None:
+    await _db.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value))
+    )
+    await _db.commit()
+
+
+async def add_to_queue(user_id: int, post_type: str, payload: dict) -> int:
+    """Add a post payload to publish queue. Returns row ID."""
+    now = datetime.now().isoformat()
+    cur = await _db.execute(
+        "INSERT INTO post_queue (user_id, post_type, payload_json, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, post_type, json.dumps(payload, ensure_ascii=False), now),
+    )
+    await _db.commit()
+    return cur.lastrowid
+
+
+async def pop_from_queue() -> tuple[int, int, str, dict] | None:
+    """Fetch and remove the oldest pending post in queue."""
+    async with _db.execute("SELECT id, user_id, post_type, payload_json FROM post_queue ORDER BY id ASC LIMIT 1") as cur:
+        row = await cur.fetchone()
+        if not row:
+            return None
+        post_id, user_id, post_type, payload_str = row[0], row[1], row[2], row[3]
+
+    await _db.execute("DELETE FROM post_queue WHERE id = ?", (post_id,))
+    await _db.commit()
+    return post_id, user_id, post_type, json.loads(payload_str)
+
+
+async def get_queue_length() -> int:
+    async with _db.execute("SELECT COUNT(*) FROM post_queue") as cur:
+        row = await cur.fetchone()
+        return row[0] if row else 0

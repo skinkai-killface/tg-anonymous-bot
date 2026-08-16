@@ -6,10 +6,11 @@
 
 import html
 from aiogram import Router, types, Bot, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 
 from config import ADMIN_CHAT_ID
 from database import increment_stat
+from album import save_album
 
 router = Router()
 # Only process messages sent in private chat with the bot
@@ -25,7 +26,7 @@ def get_author_header(user: types.User) -> str:
 
 def moderation_keyboard(user_id: int, message_id: int) -> InlineKeyboardMarkup:
     """
-    Builds an inline keyboard with Approve / Reject / Block buttons.
+    Builds an inline keyboard with Approve / Reject / Edit / Block buttons.
     Callback data encodes the action, user_id, and original message_id.
     """
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -40,6 +41,10 @@ def moderation_keyboard(user_id: int, message_id: int) -> InlineKeyboardMarkup:
             ),
         ],
         [
+            InlineKeyboardButton(
+                text="✏️ Изменить текст",
+                callback_data=f"edit_text:{user_id}:{message_id}",
+            ),
             InlineKeyboardButton(
                 text="🚫 Заблокировать",
                 callback_data=f"block:{user_id}:{message_id}",
@@ -84,9 +89,51 @@ async def handle_sticker(message: types.Message, bot: Bot):
     await message.answer("✅ Твой стикер отправлен на модерацию!")
 
 
+@router.message(F.media_group_id)
+async def handle_album(message: types.Message, bot: Bot, album: list[types.Message] | None = None):
+    """Forward a multi-media album (photos/videos) to admin chat as a single group."""
+    if not album:
+        album = [message]
+
+    first_msg = album[0]
+    author = get_author_header(first_msg.from_user)
+    user_caption = first_msg.caption or ""
+    header = f"📩 <b>Новое предложение (альбом: {len(album)} шт.)</b>\n{author}"
+    full_caption = f"{header}\n\n{user_caption}" if user_caption else header
+
+    media_list = []
+    saved_items = []
+    for idx, msg in enumerate(album):
+        caption = full_caption if idx == 0 else None
+        if msg.photo:
+            file_id = msg.photo[-1].file_id
+            media_list.append(InputMediaPhoto(media=file_id, caption=caption, parse_mode="HTML"))
+            saved_items.append({"type": "photo", "file_id": file_id, "caption": user_caption if idx == 0 else ""})
+        elif msg.video:
+            file_id = msg.video.file_id
+            media_list.append(InputMediaVideo(media=file_id, caption=caption, parse_mode="HTML"))
+            saved_items.append({"type": "video", "file_id": file_id, "caption": user_caption if idx == 0 else ""})
+
+    if media_list:
+        sent_msgs = await bot.send_media_group(chat_id=ADMIN_CHAT_ID, media=media_list)
+        # Store album mapping by first_msg.message_id
+        save_album(first_msg.message_id, saved_items)
+
+        # Send control keyboard
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"⚖️ <b>Управление альбомом выше</b> ({len(album)} файлов):",
+            reply_to_message_id=sent_msgs[0].message_id,
+            parse_mode="HTML",
+            reply_markup=moderation_keyboard(first_msg.from_user.id, first_msg.message_id),
+        )
+        await increment_stat("total_suggestions")
+        await first_msg.answer("✅ Твой альбом отправлен на модерацию!")
+
+
 @router.message(F.photo)
 async def handle_photo(message: types.Message, bot: Bot):
-    """Forward a photo suggestion to the admin chat for moderation."""
+    """Forward a single photo suggestion to the admin chat for moderation."""
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (фото)</b>\n{author}"
@@ -107,7 +154,7 @@ async def handle_photo(message: types.Message, bot: Bot):
 
 @router.message(F.video)
 async def handle_video(message: types.Message, bot: Bot):
-    """Forward a video suggestion to the admin chat for moderation."""
+    """Forward a single video suggestion to the admin chat for moderation."""
     author = get_author_header(message.from_user)
     user_caption = message.caption or ""
     header = f"📩 <b>Новое предложение (видео)</b>\n{author}"

@@ -6,12 +6,15 @@
 
 """
 Bot middlewares:
-- BlockedUsersMiddleware  — silently drops updates from blocked users (O(1) in-memory).
-- ThrottlingMiddleware    — rate-limits private messages & auto-bans aggressive spammers.
+- BlockedUsersMiddleware — silently drops updates from blocked users (O(1) in-memory).
+- UserRegisterMiddleware — tracks active users in SQLite for broadcast & stats.
+- ThrottlingMiddleware   — rate-limits private messages & auto-bans aggressive spammers.
+- MediaGroupMiddleware   — aggregates multi-photo/video albums into single updates.
 """
 
 import time
 import html
+import asyncio
 import logging
 from typing import Callable, Dict, Any, Awaitable
 
@@ -19,7 +22,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message
 
 from config import ADMIN_CHAT_ID
-from database import is_blocked, block_user, increment_stat
+from database import is_blocked, block_user, increment_stat, register_user
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,61 @@ class BlockedUsersMiddleware(BaseMiddleware):
         if event.chat.type == "private" and event.from_user and is_blocked(event.from_user.id):
             return  # Silently drop the update
         return await handler(event, data)
+
+
+class UserRegisterMiddleware(BaseMiddleware):
+    """
+    Registers or updates users in SQLite on every private message.
+    Used for broadcasting and user analytics.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any],
+    ) -> Any:
+        if event.chat.type == "private" and event.from_user:
+            user = event.from_user
+            await register_user(
+                user_id=user.id,
+                username=user.username or "",
+                full_name=user.full_name or "",
+            )
+        return await handler(event, data)
+
+
+class MediaGroupMiddleware(BaseMiddleware):
+    """
+    Middleware that buffers multi-photo/video messages belonging to the same album
+    (media_group_id) and passes the list of Message objects in data['album'].
+    """
+
+    def __init__(self, latency: float = 0.6):
+        self.latency = latency
+        self.media_groups: Dict[str, list[Message]] = {}
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any],
+    ) -> Any:
+        if not event.media_group_id:
+            return await handler(event, data)
+
+        mg_id = event.media_group_id
+        if mg_id not in self.media_groups:
+            self.media_groups[mg_id] = [event]
+            await asyncio.sleep(self.latency)
+            messages = self.media_groups.pop(mg_id, [])
+            if messages:
+                data["album"] = messages
+                return await handler(messages[0], data)
+            return
+
+        self.media_groups[mg_id].append(event)
+        return  # Drop subsequent parts of album; first task will handle it with data['album']
 
 
 class ThrottlingMiddleware(BaseMiddleware):
@@ -77,7 +135,6 @@ class ThrottlingMiddleware(BaseMiddleware):
         if now - last < self.cooldown:
             # Record this violation attempt
             violations = self._user_violations.get(user_id, [])
-            # Keep only violations within SPAM_WINDOW
             violations = [t for t in violations if now - t <= SPAM_WINDOW]
             violations.append(now)
             self._user_violations[user_id] = violations
@@ -86,21 +143,17 @@ class ThrottlingMiddleware(BaseMiddleware):
             if len(violations) >= MAX_SPAM_VIOLATIONS:
                 logger.warning(f"Auto-banning spammer {user_id} ({event.from_user.full_name}) after {len(violations)} flood attempts")
                 
-                # 1. Block in database & cache
                 await block_user(user_id, reason=f"Автобан: спам ({len(violations)} запросов за {SPAM_WINDOW}с)")
                 await increment_stat("blocked")
                 
-                # 2. Clear tracking for this user
                 self._user_violations.pop(user_id, None)
                 self._user_timestamps.pop(user_id, None)
 
-                # 3. Notify user
                 try:
                     await event.answer("⛔ <b>Вы были автоматически заблокированы за спам/флуд.</b>", parse_mode="HTML")
                 except Exception:
                     pass
 
-                # 4. Notify moderation chat
                 try:
                     name = html.escape(event.from_user.full_name or "Пользователь")
                     tag = f", @{event.from_user.username}" if event.from_user.username else ""
@@ -120,11 +173,10 @@ class ThrottlingMiddleware(BaseMiddleware):
 
                 return  # Drop update
 
-            # If not yet banned, send progressive warning
             remaining = round(self.cooldown - (now - last))
             try:
                 if len(violations) >= 2:
-                    await event.answer(f"⚠️ <b>Не спамь!</b> Ещё попытка, и ты получишь автоматический бан.", parse_mode="HTML")
+                    await event.answer("⚠️ <b>Не спамь!</b> Ещё попытка, и ты получишь автоматический бан.", parse_mode="HTML")
                 else:
                     await event.answer(f"⏳ Подожди ещё {remaining} сек. перед следующим сообщением.")
             except Exception:

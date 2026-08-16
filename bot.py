@@ -17,7 +17,12 @@ except ImportError:
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, ADMIN_CHAT_ID, BOT_VERSION
 from handlers import start_router, suggest_router, moderation_router, admin_router
-from middlewares import BlockedUsersMiddleware, ThrottlingMiddleware
+from middlewares import (
+    BlockedUsersMiddleware,
+    UserRegisterMiddleware,
+    ThrottlingMiddleware,
+    MediaGroupMiddleware,
+)
 from database import init_db, close_db, migrate_from_json
 
 logger = logging.getLogger(__name__)
@@ -76,9 +81,11 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    # Register middlewares (order matters: blocked check first, then throttle)
+    # Register middlewares in optimal order
     dp.message.middleware(BlockedUsersMiddleware())
+    dp.message.middleware(UserRegisterMiddleware())
     dp.message.middleware(ThrottlingMiddleware())
+    dp.message.middleware(MediaGroupMiddleware())
 
     # Register routers (order matters: start, admin, and moderation before suggest)
     dp.include_router(start_router)

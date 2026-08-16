@@ -7,9 +7,12 @@
 import asyncio
 import logging
 from aiogram import Router, types, Bot, F
+from aiogram.filters import Command
+from aiogram.types import InputMediaPhoto, InputMediaVideo
 
-from config import CHANNEL_ID
+from config import CHANNEL_ID, ADMIN_CHAT_ID
 from database import block_user, increment_stat, record_moderation
+from album import pop_album, get_album
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -17,8 +20,6 @@ logger = logging.getLogger(__name__)
 CHANNEL_HEADER = "📩 <b>Новое анонимное сообщение:</b>"
 
 # ── Anti-Double-Click protection ──
-# Tracks message IDs currently being processed to prevent duplicate channel posts
-# when multiple admins press the button simultaneously.
 _processing_lock = asyncio.Lock()
 _processing_messages: set[int] = set()
 
@@ -36,7 +37,6 @@ def strip_header(text: str) -> str:
     if "\n\n" in text:
         parts = text.split("\n\n", 1)
         user_content = parts[1].strip()
-        # Clean up any trailing admin status if present
         if user_content.startswith("✅ Одобрено") or user_content.startswith("❌ Отклонено"):
             return ""
         return user_content
@@ -75,7 +75,7 @@ async def mark_moderation_message(source_msg: types.Message, status_text: str):
                 parse_mode="HTML",
             )
         else:
-            # For stickers / video_notes where caption is impossible
+            # For stickers / video_notes / albums where caption editing is not supported
             await source_msg.edit_reply_markup(reply_markup=None)
             await source_msg.reply(status_text, parse_mode="HTML")
     except Exception:
@@ -96,22 +96,89 @@ def _release_message(message_id: int) -> None:
     _processing_messages.discard(message_id)
 
 
+@router.callback_query(F.data.startswith("edit_text:"))
+async def on_edit_text_button(callback: types.CallbackQuery):
+    """Admin clicked 'Edit text' button — send instructions."""
+    await callback.answer()
+    await callback.message.reply(
+        "✏️ <b>Как изменить текст предложки:</b>\n"
+        "Ответьте (Reply) на это сообщение с командой:\n"
+        "<code>/edit Ваш новый текст или подпись</code>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(F.chat.id == ADMIN_CHAT_ID, Command("edit"), F.reply_to_message)
+async def cmd_edit_suggestion(message: types.Message):
+    """
+    /edit <new text> — edit the text or caption of a replied moderation message.
+    """
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip():
+        await message.reply("Использование: ответьте на предложку командой <code>/edit Новый текст</code>", parse_mode="HTML")
+        return
+
+    new_text = args[1].strip()
+    target = message.reply_to_message
+
+    try:
+        if target.text:
+            # Keep original author header if present
+            lines = target.text.split("\n\n", 1)
+            header = lines[0] if len(lines) > 1 else target.text
+            await target.edit_text(
+                f"{header}\n\n{new_text}\n<i>[✏️ Текст отредактирован]</i>",
+                parse_mode="HTML",
+                reply_markup=target.reply_markup,
+            )
+            await message.reply("✅ Текст сообщения успешно обновлён!")
+        elif target.caption is not None:
+            lines = (target.caption or "").split("\n\n", 1)
+            header = lines[0] if len(lines) > 1 else (target.caption or "")
+            await target.edit_caption(
+                caption=f"{header}\n\n{new_text}\n<i>[✏️ Подпись отредактирована]</i>",
+                parse_mode="HTML",
+                reply_markup=target.reply_markup,
+            )
+            await message.reply("✅ Подпись медиа успешно обновлена!")
+        else:
+            await message.reply("⚠️ Нельзя изменить текст у стикера или кружочка.")
+    except Exception as e:
+        await message.reply(f"❌ Ошибка при редактировании: {e}")
+
+
 @router.callback_query(F.data.startswith("approve:"))
 async def on_approve(callback: types.CallbackQuery, bot: Bot):
     """
     Admin pressed "Approve". Publish the content to the channel with the anonymous header.
     """
-    _, user_id_str, _ = callback.data.split(":")
+    _, user_id_str, orig_msg_id_str = callback.data.split(":")
     user_id = int(user_id_str)
+    orig_msg_id = int(orig_msg_id_str)
     source_msg = callback.message
 
-    # Anti-Double-Click: prevent duplicate approvals
+    # Anti-Double-Click
     if not await _acquire_message(source_msg.message_id):
         await callback.answer("⚠️ Уже обрабатывается другим модератором.", show_alert=True)
         return
 
     try:
-        if source_msg.text:
+        # Check if this is an album
+        album_items = pop_album(orig_msg_id)
+        if album_items:
+            album_caption = strip_header(source_msg.text or "")
+            post_caption = f"{CHANNEL_HEADER}\n\n{album_caption}" if album_caption else CHANNEL_HEADER
+            media_list = []
+            for idx, item in enumerate(album_items):
+                cap = post_caption if idx == 0 else None
+                if item["type"] == "photo":
+                    media_list.append(InputMediaPhoto(media=item["file_id"], caption=cap, parse_mode="HTML"))
+                elif item["type"] == "video":
+                    media_list.append(InputMediaVideo(media=item["file_id"], caption=cap, parse_mode="HTML"))
+            if media_list:
+                await bot.send_media_group(chat_id=CHANNEL_ID, media=media_list)
+
+        elif source_msg.text:
             content = strip_header(source_msg.text)
             post_text = f"{CHANNEL_HEADER}\n\n{content}" if content else CHANNEL_HEADER
             await bot.send_message(
@@ -202,14 +269,14 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
         admin_name = callback.from_user.full_name
         await mark_moderation_message(source_msg, f"✅ <b>Одобрено</b> — {admin_name}")
 
-        # Notify the user that their suggestion was approved
+        # Notify user
         try:
             await bot.send_message(
                 chat_id=user_id,
                 text="🎉 Твоё сообщение было одобрено и опубликовано в канале!",
             )
         except Exception:
-            pass  # user may have blocked the bot
+            pass
 
         await callback.answer("Опубликовано ✅")
 
@@ -222,26 +289,24 @@ async def on_reject(callback: types.CallbackQuery, bot: Bot):
     """
     Admin pressed "Reject". Mark as rejected and notify the user.
     """
-    _, user_id_str, _ = callback.data.split(":")
+    _, user_id_str, orig_msg_id_str = callback.data.split(":")
     user_id = int(user_id_str)
+    orig_msg_id = int(orig_msg_id_str)
     source_msg = callback.message
 
-    # Anti-Double-Click
     if not await _acquire_message(source_msg.message_id):
         await callback.answer("⚠️ Уже обрабатывается другим модератором.", show_alert=True)
         return
 
     try:
-        admin_name = callback.from_user.full_name
+        # Clean up album if was rejected
+        pop_album(orig_msg_id)
 
-        # Record stats
+        admin_name = callback.from_user.full_name
         await increment_stat("rejected")
         await record_moderation(callback.from_user.id, admin_name, "rejected")
-
-        # Update the admin message to show it was rejected
         await mark_moderation_message(source_msg, f"❌ <b>Отклонено</b> — {admin_name}")
 
-        # Notify the user
         try:
             await bot.send_message(
                 chat_id=user_id,
@@ -261,29 +326,24 @@ async def on_block(callback: types.CallbackQuery, bot: Bot):
     """
     Admin pressed "Block". Block the user and reject the message.
     """
-    _, user_id_str, _ = callback.data.split(":")
+    _, user_id_str, orig_msg_id_str = callback.data.split(":")
     user_id = int(user_id_str)
+    orig_msg_id = int(orig_msg_id_str)
     source_msg = callback.message
 
-    # Anti-Double-Click
     if not await _acquire_message(source_msg.message_id):
         await callback.answer("⚠️ Уже обрабатывается другим модератором.", show_alert=True)
         return
 
     try:
+        pop_album(orig_msg_id)
+
         admin_name = callback.from_user.full_name
-
-        # Block the user
         await block_user(user_id, reason=f"Blocked by {admin_name}")
-
-        # Record stats
         await increment_stat("blocked")
         await record_moderation(callback.from_user.id, admin_name, "blocked")
-
-        # Update the admin message
         await mark_moderation_message(source_msg, f"🚫 <b>Заблокирован и отклонён</b> — {admin_name}")
 
-        # Notify the user
         try:
             await bot.send_message(
                 chat_id=user_id,
