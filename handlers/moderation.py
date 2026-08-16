@@ -102,157 +102,174 @@ def _release_message(message_id: int) -> None:
     _processing_messages.discard(message_id)
 
 
+# ── Edit State Tracker ──
+# admin_user_id -> {"target_msg_id": int, "keyboard": InlineKeyboardMarkup, "instruction_msg_id": int}
+_active_editing: dict[int, dict] = {}
+# instruction_message_id -> target_msg_id
+_edit_instruction_map: dict[int, int] = {}
+
+
 @router.callback_query(F.data.startswith("edit_text:"))
 async def on_edit_text_button(callback: types.CallbackQuery, bot: Bot):
     """
     Admin clicked 'Edit text' button.
-    Store the message_id and ask the admin to send new text.
+    Activate edit state for this admin and prompt for new text.
     """
-    await callback.answer()
-    parts = callback.data.split(":")
-    # parts: edit_text:user_id:orig_msg_id
+    await callback.answer("Режим редактирования включен ✏️")
     source_msg = callback.message
+    admin_id = callback.from_user.id
 
-    # Save mapping: the reply instruction message -> the suggestion message
     instruction = await source_msg.reply(
-        "✏️ <b>Отправьте новый текст/подпись ответом (Reply) на ЭТО сообщение:</b>",
+        "✏️ <b>Режим редактирования:</b>\n"
+        "Отправьте новый текст следующим сообщением (или сделайте Reply на предложку):\n\n"
+        "<i>Нажмите /cancel чтобы отменить.</i>",
         parse_mode="HTML",
     )
-    # Store the suggestion message_id in a module-level dict so we can find it later
-    _edit_targets[instruction.message_id] = source_msg.message_id
+
+    _active_editing[admin_id] = {
+        "target_msg_id": source_msg.message_id,
+        "keyboard": source_msg.reply_markup,
+        "instruction_msg_id": instruction.message_id,
+    }
+    _edit_instruction_map[instruction.message_id] = source_msg.message_id
 
 
-# Module-level mapping: instruction_message_id -> suggestion_message_id
-_edit_targets: dict[int, int] = {}
+@router.message(Command("cancel"))
+async def cmd_cancel_edit(message: types.Message):
+    """Cancel active editing session."""
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+    admin_id = message.from_user.id
+    if admin_id in _active_editing:
+        _active_editing.pop(admin_id, None)
+        await message.reply("❌ Редактирование отменено.")
 
 
 @router.message(Command("edit"))
 async def cmd_edit_suggestion(message: types.Message, bot: Bot):
     """
     /edit <new text> — edit the text or caption of a suggestion in admin chat.
-    Must be a reply to the suggestion itself OR the bot's edit instruction.
     """
     if message.chat.id != ADMIN_CHAT_ID:
         return
 
     if not message.reply_to_message:
-        await message.reply(
-            "✏️ Ответьте (Reply) на предложку командой <code>/edit Новый текст</code>",
-            parse_mode="HTML",
-        )
+        await message.reply("✏️ Ответьте (Reply) на предложку командой <code>/edit Новый текст</code>", parse_mode="HTML")
         return
 
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip():
-        await message.reply(
-            "✏️ Использование: <code>/edit Новый текст</code>",
-            parse_mode="HTML",
-        )
+        await message.reply("✏️ Использование: <code>/edit Новый текст</code>", parse_mode="HTML")
         return
 
     new_text = args[1].strip()
     replied = message.reply_to_message
 
-    # If replied to the bot's instruction, find the real suggestion
-    target_msg_id = _edit_targets.get(replied.message_id)
-    if target_msg_id:
-        # Clean up mapping
-        _edit_targets.pop(replied.message_id, None)
-
-    await _apply_edit(message, replied, new_text, bot, target_msg_id)
+    target_id = _edit_instruction_map.get(replied.message_id) or replied.message_id
+    await _apply_edit_by_id(target_id, new_text, message, bot)
 
 
-@router.message(F.chat.id == ADMIN_CHAT_ID, F.reply_to_message, ~F.text.startswith("/"))
-async def on_edit_reply(message: types.Message, bot: Bot):
+@router.message(F.chat.id == ADMIN_CHAT_ID, ~F.text.startswith("/"))
+async def on_admin_message_edit_check(message: types.Message, bot: Bot):
     """
-    Handle plain text replies to the bot's edit instruction message.
-    No need for /edit prefix — just type the new text as reply.
+    Catches text sent while admin is in active editing mode,
+    OR sent as reply to an edit instruction / suggestion card.
     """
     if not message.text:
         return
 
+    admin_id = message.from_user.id if message.from_user else 0
     replied = message.reply_to_message
-    if not replied:
-        return
 
-    # Only activate if replying to a known edit instruction
-    target_msg_id = _edit_targets.get(replied.message_id)
-    if not target_msg_id:
-        return
+    target_id = None
+    instruction_id = None
 
-    _edit_targets.pop(replied.message_id, None)
+    # Case 1: Admin has active edit session
+    if admin_id in _active_editing:
+        sess = _active_editing.pop(admin_id)
+        target_id = sess["target_msg_id"]
+        instruction_id = sess.get("instruction_msg_id")
+
+    # Case 2: Message is a reply to an edit instruction
+    elif replied and replied.message_id in _edit_instruction_map:
+        target_id = _edit_instruction_map.pop(replied.message_id)
+        instruction_id = replied.message_id
+
+    # Case 3: Message is a direct reply to a suggestion card with moderation keyboard
+    elif replied and replied.reply_markup and replied.reply_markup.inline_keyboard:
+        # Check if replied message has approve/reject buttons
+        has_mod_buttons = any(
+            btn.callback_data and btn.callback_data.startswith(("approve:", "reject:", "edit_text:"))
+            for row in replied.reply_markup.inline_keyboard
+            for btn in row
+        )
+        if has_mod_buttons:
+            target_id = replied.message_id
+
+    if not target_id:
+        return  # Let other handlers (like admin_reply_to_user) handle it
+
     new_text = message.text.strip()
-    if not new_text:
-        return
-
-    await _apply_edit(message, replied, new_text, bot, target_msg_id)
+    await _apply_edit_by_id(target_id, new_text, message, bot, instruction_id)
 
 
-async def _apply_edit(
-    message: types.Message,
-    replied: types.Message,
+async def _apply_edit_by_id(
+    target_msg_id: int,
     new_text: str,
+    trigger_message: types.Message,
     bot: Bot,
-    target_msg_id: int | None = None,
+    instruction_msg_id: int | None = None,
 ):
-    """Apply the text edit to the suggestion message."""
+    """Update text/caption of target suggestion message and keep moderation keyboard."""
     try:
-        if target_msg_id:
-            # We know the exact suggestion message — edit it by ID
-            try:
-                # Try editing text message
-                await bot.edit_message_text(
-                    chat_id=ADMIN_CHAT_ID,
-                    message_id=target_msg_id,
-                    text=new_text + "\n<i>[✏️ Текст отредактирован]</i>",
-                    parse_mode="HTML",
-                )
-                await update_archive_text(new_text=new_text, admin_msg_id=target_msg_id)
-                await message.reply("✅ Текст успешно обновлён!")
-                return
-            except Exception:
-                pass
+        # Fetch or construct keyboard
+        # Try editing as text message first
+        edited = False
+        try:
+            # We first try to get the message or edit directly
+            lines = []
+            author_header = ""
 
-            # Try editing caption (photo/video/etc)
+            # Try editing caption (photo, video, etc.)
             try:
                 await bot.edit_message_caption(
                     chat_id=ADMIN_CHAT_ID,
                     message_id=target_msg_id,
-                    caption=new_text + "\n<i>[✏️ Подпись отредактирована]</i>",
+                    caption=f"{new_text}\n\n<i>[✏️ Подпись отредактирована]</i>",
                     parse_mode="HTML",
+                    reply_markup=trigger_message.reply_to_message.reply_markup if trigger_message.reply_to_message and trigger_message.reply_to_message.message_id == target_msg_id else None,
                 )
-                await update_archive_text(new_text=new_text, admin_msg_id=target_msg_id)
-                await message.reply("✅ Подпись успешно обновлена!")
-                return
-            except Exception as e2:
-                await message.reply(f"❌ Не удалось изменить: {e2}")
-                return
+                edited = True
+            except Exception:
+                pass
 
-        # Fallback: try to edit the replied message directly
-        target = replied
-        # If replied to bot's message, try to go up
-        if target.from_user and target.from_user.is_bot and target.reply_to_message:
-            target = target.reply_to_message
+            if not edited:
+                # Try editing text
+                await bot.edit_message_text(
+                    chat_id=ADMIN_CHAT_ID,
+                    message_id=target_msg_id,
+                    text=f"{new_text}\n\n<i>[✏️ Текст отредактирован]</i>",
+                    parse_mode="HTML",
+                    reply_markup=trigger_message.reply_to_message.reply_markup if trigger_message.reply_to_message and trigger_message.reply_to_message.message_id == target_msg_id else None,
+                )
+                edited = True
 
-        if target.text:
-            lines = target.text.split("\n\n", 1)
-            header = lines[0] if len(lines) > 1 else ""
-            full = f"{header}\n\n{new_text}\n<i>[✏️ Текст отредактирован]</i>" if header else f"{new_text}\n<i>[✏️ Текст отредактирован]</i>"
-            await target.edit_text(full, parse_mode="HTML", reply_markup=target.reply_markup)
-            await update_archive_text(new_text=new_text, admin_msg_id=target.message_id)
-            await message.reply("✅ Текст обновлён!")
-        elif target.caption is not None:
-            lines = (target.caption or "").split("\n\n", 1)
-            header = lines[0] if len(lines) > 1 else ""
-            full = f"{header}\n\n{new_text}\n<i>[✏️ Подпись отредактирована]</i>" if header else f"{new_text}\n<i>[✏️ Подпись отредактирована]</i>"
-            await target.edit_caption(caption=full, parse_mode="HTML", reply_markup=target.reply_markup)
-            await update_archive_text(new_text=new_text, admin_msg_id=target.message_id)
-            await message.reply("✅ Подпись обновлена!")
-        else:
-            await message.reply("⚠️ Нельзя изменить текст у этого типа сообщения.")
+        except Exception as e:
+            logger.warning(f"Direct edit by ID attempt: {e}")
+
+        await update_archive_text(new_text=new_text, admin_msg_id=target_msg_id)
+        await trigger_message.reply("✅ <b>Текст предложки успешно обновлён!</b>", parse_mode="HTML")
+
+        # Clean up instruction message if exists
+        if instruction_msg_id:
+            try:
+                await bot.delete_message(chat_id=ADMIN_CHAT_ID, message_id=instruction_msg_id)
+            except Exception:
+                pass
+
     except Exception as e:
-        logger.error(f"Edit failed: {e}")
-        await message.reply(f"❌ Ошибка: {e}")
+        logger.error(f"Failed to edit suggestion {target_msg_id}: {e}")
+        await trigger_message.reply(f"❌ Ошибка при изменении: {e}")
 
 
 @router.callback_query(F.data.startswith("approve:"))
