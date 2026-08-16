@@ -97,31 +97,41 @@ def _release_message(message_id: int) -> None:
 
 
 @router.callback_query(F.data.startswith("edit_text:"))
-async def on_edit_text_button(callback: types.CallbackQuery):
-    """Admin clicked 'Edit text' button — send instructions."""
+async def on_edit_text_button(callback: types.CallbackQuery, bot: Bot):
+    """
+    Admin clicked 'Edit text' button.
+    Store the message_id and ask the admin to send new text.
+    """
     await callback.answer()
-    # Reply to the suggestion message itself so the admin can reply to it
-    target_msg = callback.message
-    await target_msg.reply(
-        "✏️ <b>Как изменить текст предложки:</b>\n"
-        "Ответьте (Reply) на <b>сообщение с предложкой выше</b> с командой:\n"
-        "<code>/edit Ваш новый текст или подпись</code>",
+    parts = callback.data.split(":")
+    # parts: edit_text:user_id:orig_msg_id
+    source_msg = callback.message
+
+    # Save mapping: the reply instruction message -> the suggestion message
+    instruction = await source_msg.reply(
+        "✏️ <b>Отправьте новый текст/подпись ответом (Reply) на ЭТО сообщение:</b>",
         parse_mode="HTML",
     )
+    # Store the suggestion message_id in a module-level dict so we can find it later
+    _edit_targets[instruction.message_id] = source_msg.message_id
+
+
+# Module-level mapping: instruction_message_id -> suggestion_message_id
+_edit_targets: dict[int, int] = {}
 
 
 @router.message(Command("edit"))
-async def cmd_edit_suggestion(message: types.Message):
+async def cmd_edit_suggestion(message: types.Message, bot: Bot):
     """
     /edit <new text> — edit the text or caption of a suggestion in admin chat.
-    Works when replying to the suggestion itself or to the bot's instruction message.
+    Must be a reply to the suggestion itself OR the bot's edit instruction.
     """
     if message.chat.id != ADMIN_CHAT_ID:
         return
 
     if not message.reply_to_message:
         await message.reply(
-            "Использование: ответьте на предложку командой <code>/edit Новый текст</code>",
+            "✏️ Ответьте (Reply) на предложку командой <code>/edit Новый текст</code>",
             parse_mode="HTML",
         )
         return
@@ -129,44 +139,110 @@ async def cmd_edit_suggestion(message: types.Message):
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip():
         await message.reply(
-            "Использование: ответьте на предложку командой <code>/edit Новый текст</code>",
+            "✏️ Использование: <code>/edit Новый текст</code>",
             parse_mode="HTML",
         )
         return
 
     new_text = args[1].strip()
+    replied = message.reply_to_message
 
-    # Find the actual suggestion message — traverse reply chain up
-    target = message.reply_to_message
+    # If replied to the bot's instruction, find the real suggestion
+    target_msg_id = _edit_targets.get(replied.message_id)
+    if target_msg_id:
+        # Clean up mapping
+        _edit_targets.pop(replied.message_id, None)
 
-    # If the user replied to the bot's instruction message, follow its reply to the original
-    if target.reply_to_message and target.from_user and target.from_user.is_bot:
-        target = target.reply_to_message
+    await _apply_edit(message, replied, new_text, bot, target_msg_id)
 
+
+@router.message(F.chat.id == ADMIN_CHAT_ID, F.reply_to_message, ~F.text.startswith("/"))
+async def on_edit_reply(message: types.Message, bot: Bot):
+    """
+    Handle plain text replies to the bot's edit instruction message.
+    No need for /edit prefix — just type the new text as reply.
+    """
+    if not message.text:
+        return
+
+    replied = message.reply_to_message
+    if not replied:
+        return
+
+    # Only activate if replying to a known edit instruction
+    target_msg_id = _edit_targets.get(replied.message_id)
+    if not target_msg_id:
+        return
+
+    _edit_targets.pop(replied.message_id, None)
+    new_text = message.text.strip()
+    if not new_text:
+        return
+
+    await _apply_edit(message, replied, new_text, bot, target_msg_id)
+
+
+async def _apply_edit(
+    message: types.Message,
+    replied: types.Message,
+    new_text: str,
+    bot: Bot,
+    target_msg_id: int | None = None,
+):
+    """Apply the text edit to the suggestion message."""
     try:
+        if target_msg_id:
+            # We know the exact suggestion message — edit it by ID
+            try:
+                # Try editing text message
+                await bot.edit_message_text(
+                    chat_id=ADMIN_CHAT_ID,
+                    message_id=target_msg_id,
+                    text=new_text + "\n<i>[✏️ Текст отредактирован]</i>",
+                    parse_mode="HTML",
+                )
+                await message.reply("✅ Текст успешно обновлён!")
+                return
+            except Exception:
+                pass
+
+            # Try editing caption (photo/video/etc)
+            try:
+                await bot.edit_message_caption(
+                    chat_id=ADMIN_CHAT_ID,
+                    message_id=target_msg_id,
+                    caption=new_text + "\n<i>[✏️ Подпись отредактирована]</i>",
+                    parse_mode="HTML",
+                )
+                await message.reply("✅ Подпись успешно обновлена!")
+                return
+            except Exception as e2:
+                await message.reply(f"❌ Не удалось изменить: {e2}")
+                return
+
+        # Fallback: try to edit the replied message directly
+        target = replied
+        # If replied to bot's message, try to go up
+        if target.from_user and target.from_user.is_bot and target.reply_to_message:
+            target = target.reply_to_message
+
         if target.text:
-            # Keep original author header if present
             lines = target.text.split("\n\n", 1)
-            header = lines[0] if len(lines) > 1 else target.text
-            await target.edit_text(
-                f"{header}\n\n{new_text}\n<i>[✏️ Текст отредактирован]</i>",
-                parse_mode="HTML",
-                reply_markup=target.reply_markup,
-            )
-            await message.reply("✅ Текст сообщения успешно обновлён!")
+            header = lines[0] if len(lines) > 1 else ""
+            full = f"{header}\n\n{new_text}\n<i>[✏️ Текст отредактирован]</i>" if header else f"{new_text}\n<i>[✏️ Текст отредактирован]</i>"
+            await target.edit_text(full, parse_mode="HTML", reply_markup=target.reply_markup)
+            await message.reply("✅ Текст обновлён!")
         elif target.caption is not None:
             lines = (target.caption or "").split("\n\n", 1)
-            header = lines[0] if len(lines) > 1 else (target.caption or "")
-            await target.edit_caption(
-                caption=f"{header}\n\n{new_text}\n<i>[✏️ Подпись отредактирована]</i>",
-                parse_mode="HTML",
-                reply_markup=target.reply_markup,
-            )
-            await message.reply("✅ Подпись медиа успешно обновлена!")
+            header = lines[0] if len(lines) > 1 else ""
+            full = f"{header}\n\n{new_text}\n<i>[✏️ Подпись отредактирована]</i>" if header else f"{new_text}\n<i>[✏️ Подпись отредактирована]</i>"
+            await target.edit_caption(caption=full, parse_mode="HTML", reply_markup=target.reply_markup)
+            await message.reply("✅ Подпись обновлена!")
         else:
-            await message.reply("⚠️ Нельзя изменить текст у стикера или кружочка.")
+            await message.reply("⚠️ Нельзя изменить текст у этого типа сообщения.")
     except Exception as e:
-        await message.reply(f"❌ Ошибка при редактировании: {e}")
+        logger.error(f"Edit failed: {e}")
+        await message.reply(f"❌ Ошибка: {e}")
 
 
 @router.callback_query(F.data.startswith("approve:"))
