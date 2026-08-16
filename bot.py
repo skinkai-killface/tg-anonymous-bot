@@ -103,10 +103,10 @@ async def main():
     dp.message.middleware(MediaGroupMiddleware())
     dp.message.middleware(ThrottlingMiddleware())
 
-    # Register routers (order matters: start, admin, and moderation before suggest)
+    # Register routers (order matters: start, moderation, admin before suggest)
     dp.include_router(start_router)
-    dp.include_router(admin_router)
     dp.include_router(moderation_router)
+    dp.include_router(admin_router)
     dp.include_router(suggest_router)
 
     # Drop pending updates and start polling

@@ -552,9 +552,13 @@ async def admin_reply_to_user(message: types.Message, bot: Bot):
     if not reply:
         return
 
+    # Ignore replies to bot's edit prompt or update messages
+    if reply.from_user and reply.from_user.is_bot:
+        if reply.text and ("Отправьте новый текст" in reply.text or "Как изменить текст" in reply.text or "Обновление" in reply.text):
+            return
+
     user_id = extract_user_id(reply)
     if not user_id:
-        logger.warning(f"Could not extract user_id from reply message: {reply.text or reply.caption}")
         return
 
     logger.info(f"Admin {message.from_user.id} is replying to user {user_id}")
