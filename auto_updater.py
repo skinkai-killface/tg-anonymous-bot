@@ -20,8 +20,8 @@ from config import ADMIN_CHAT_ID
 
 logger = logging.getLogger(__name__)
 
-# Check interval in seconds (every 60 seconds)
-CHECK_INTERVAL_SECONDS = 60
+# Check interval in seconds (every 30 seconds)
+CHECK_INTERVAL_SECONDS = 30
 
 # In-memory tracking of the last commit hash we notified admins about
 _last_notified_hash: str | None = None
@@ -49,39 +49,49 @@ async def get_git_output(args: list[str], bot_dir: str) -> str:
 
 async def check_for_updates() -> tuple[bool, str, str]:
     """
-    Checks if origin/main has newer commits than local HEAD.
+    Checks if GitHub origin/main has a newer commit than local HEAD.
+    Uses 'git ls-remote' for fast, non-blocking check, and fetches if newer commit is found.
     Returns (has_update, commit_msg, remote_hash).
     """
     bot_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 1. Fetch remote changes silently
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "fetch", "origin", "main",
-            cwd=bot_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=30.0)
-    except Exception as e:
-        logger.debug(f"Git fetch check failed: {e}")
-        return False, "", ""
-
-    # 2. Get local HEAD and remote origin/main hashes
     try:
         local_hash = await get_git_output(["git", "rev-parse", "HEAD"], bot_dir)
-        remote_hash = await get_git_output(["git", "rev-parse", "origin/main"], bot_dir)
+        ls_output = await get_git_output(["git", "ls-remote", "origin", "refs/heads/main"], bot_dir)
 
-        if not local_hash or not remote_hash:
+        if not ls_output or not local_hash:
             return False, "", ""
 
-        if local_hash != remote_hash:
-            commit_msg = await get_git_output(
-                ["git", "log", "-1", "--pretty=format:%s", "origin/main"], bot_dir
-            )
+        parts = ls_output.split()
+        if not parts:
+            return False, "", ""
+
+        remote_hash = parts[0].strip()
+
+        if remote_hash and local_hash and remote_hash != local_hash:
+            # Fetch latest commit so we can get the commit message
+            commit_msg = ""
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "fetch", "origin", "main",
+                    cwd=bot_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=20.0)
+                commit_msg = await get_git_output(
+                    ["git", "log", "-1", "--pretty=format:%s", "FETCH_HEAD"], bot_dir
+                )
+            except Exception:
+                pass
+
+            if not commit_msg:
+                commit_msg = f"Новый коммит {remote_hash[:7]}"
+
             return True, commit_msg, remote_hash
+
     except Exception as e:
-        logger.debug(f"Git rev-parse check failed: {e}")
+        logger.warning(f"Error checking for updates: {e}")
 
     return False, "", ""
 
@@ -186,8 +196,14 @@ async def auto_update_checker_loop(bot: Bot) -> None:
     global _last_notified_hash
     logger.info("Auto-update background checker started.")
 
-    # Initial delay after startup
-    await asyncio.sleep(15)
+    bot_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        _last_notified_hash = await get_git_output(["git", "rev-parse", "HEAD"], bot_dir)
+    except Exception:
+        pass
+
+    # Quick initial delay after startup
+    await asyncio.sleep(5)
 
     while True:
         try:
@@ -210,6 +226,6 @@ async def auto_update_checker_loop(bot: Bot) -> None:
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.debug(f"Error in auto_update_checker_loop: {e}")
+            logger.warning(f"Error in auto_update_checker_loop: {e}")
 
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
