@@ -128,6 +128,10 @@ class ThrottlingMiddleware(BaseMiddleware):
         if event.text and event.text.startswith("/"):
             return await handler(event, data)
 
+        # Skip album messages — they are handled by MediaGroupMiddleware
+        if event.media_group_id:
+            return await handler(event, data)
+
         user_id = event.from_user.id
         now = time.monotonic()
         last = self._user_timestamps.get(user_id, 0)

@@ -93,11 +93,15 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    # Register middlewares in optimal order
+    # Register middlewares in optimal order:
+    # 1. BlockedUsers — drop banned users immediately
+    # 2. UserRegister — track users in DB
+    # 3. MediaGroup — aggregate album photos BEFORE throttle
+    # 4. Throttling — rate-limit (skips media_group messages)
     dp.message.middleware(BlockedUsersMiddleware())
     dp.message.middleware(UserRegisterMiddleware())
-    dp.message.middleware(ThrottlingMiddleware())
     dp.message.middleware(MediaGroupMiddleware())
+    dp.message.middleware(ThrottlingMiddleware())
 
     # Register routers (order matters: start, admin, and moderation before suggest)
     dp.include_router(start_router)
