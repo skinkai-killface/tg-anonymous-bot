@@ -100,26 +100,48 @@ def _release_message(message_id: int) -> None:
 async def on_edit_text_button(callback: types.CallbackQuery):
     """Admin clicked 'Edit text' button — send instructions."""
     await callback.answer()
-    await callback.message.reply(
+    # Reply to the suggestion message itself so the admin can reply to it
+    target_msg = callback.message
+    await target_msg.reply(
         "✏️ <b>Как изменить текст предложки:</b>\n"
-        "Ответьте (Reply) на это сообщение с командой:\n"
+        "Ответьте (Reply) на <b>сообщение с предложкой выше</b> с командой:\n"
         "<code>/edit Ваш новый текст или подпись</code>",
         parse_mode="HTML",
     )
 
 
-@router.message(F.chat.id == ADMIN_CHAT_ID, Command("edit"), F.reply_to_message)
+@router.message(Command("edit"))
 async def cmd_edit_suggestion(message: types.Message):
     """
-    /edit <new text> — edit the text or caption of a replied moderation message.
+    /edit <new text> — edit the text or caption of a suggestion in admin chat.
+    Works when replying to the suggestion itself or to the bot's instruction message.
     """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    if not message.reply_to_message:
+        await message.reply(
+            "Использование: ответьте на предложку командой <code>/edit Новый текст</code>",
+            parse_mode="HTML",
+        )
+        return
+
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip():
-        await message.reply("Использование: ответьте на предложку командой <code>/edit Новый текст</code>", parse_mode="HTML")
+        await message.reply(
+            "Использование: ответьте на предложку командой <code>/edit Новый текст</code>",
+            parse_mode="HTML",
+        )
         return
 
     new_text = args[1].strip()
+
+    # Find the actual suggestion message — traverse reply chain up
     target = message.reply_to_message
+
+    # If the user replied to the bot's instruction message, follow its reply to the original
+    if target.reply_to_message and target.from_user and target.from_user.is_bot:
+        target = target.reply_to_message
 
     try:
         if target.text:
