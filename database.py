@@ -480,6 +480,38 @@ async def get_moderator_stats() -> list[tuple[int, str, int, int, int]]:
         return [(row[0], row[1], row[2], row[3], row[4]) async for row in cur]
 
 
+async def get_daily_moderator_stats(date_str: str) -> list[dict]:
+    """
+    Return daily moderator statistics from archive_posts for a given date (YYYY-MM-DD).
+    """
+    async with _db.execute(
+        """
+        SELECT moderator_id, moderator_name,
+               SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+               SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+               SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) as blocked,
+               COUNT(*) as total
+        FROM archive_posts
+        WHERE moderated_at LIKE ? AND moderator_id IS NOT NULL AND moderator_id != 0
+        GROUP BY moderator_id, moderator_name
+        ORDER BY total DESC
+        """,
+        (f"{date_str}%",),
+    ) as cur:
+        rows = await cur.fetchall()
+        return [
+            {
+                "moderator_id": r[0],
+                "moderator_name": r[1] or f"ID {r[0]}",
+                "approved": r[2],
+                "rejected": r[3],
+                "blocked": r[4],
+                "total": r[5],
+            }
+            for r in rows
+        ]
+
+
 # ────────────────────── settings & post queue ───────────────────────
 
 async def get_setting(key: str, default: str = "") -> str:

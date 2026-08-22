@@ -25,15 +25,17 @@ from middlewares import (
 )
 from database import init_db, close_db, migrate_from_json
 from auto_updater import auto_update_checker_loop
+from daily_report import daily_report_loop
 
 logger = logging.getLogger(__name__)
 
 _updater_task: asyncio.Task | None = None
+_report_task: asyncio.Task | None = None
 
 
 async def on_startup(bot: Bot):
     """Initialize database, start auto-updater loop, and notify admin chat."""
-    global _updater_task
+    global _updater_task, _report_task
 
     # Initialize SQLite database
     await init_db()
@@ -44,8 +46,9 @@ async def on_startup(bot: Bot):
     if migrated:
         logger.info(f"Migrated {migrated} blocked users from JSON to SQLite.")
 
-    # Start background auto-updater task
+    # Start background tasks
     _updater_task = asyncio.create_task(auto_update_checker_loop(bot))
+    _report_task = asyncio.create_task(daily_report_loop(bot))
 
     try:
         me = await bot.get_me()
@@ -61,9 +64,11 @@ async def on_startup(bot: Bot):
 
 async def on_shutdown(bot: Bot):
     """Close database, cancel background tasks, and notify admin chat."""
-    global _updater_task
+    global _updater_task, _report_task
     if _updater_task and not _updater_task.done():
         _updater_task.cancel()
+    if _report_task and not _report_task.done():
+        _report_task.cancel()
 
     try:
         await bot.send_message(

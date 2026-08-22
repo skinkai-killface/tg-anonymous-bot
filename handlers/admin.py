@@ -12,6 +12,8 @@ import asyncio
 import subprocess
 import logging
 import html
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from aiogram import Router, types, Bot, F
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
@@ -38,8 +40,10 @@ from database import (
     get_archive_by_orig_id,
     get_archive_by_channel_msg_id,
     update_archive_status_by_id,
+    get_daily_moderator_stats,
 )
 from config import ADMIN_CHAT_ID, CHANNEL_ID, BOT_VERSION
+from daily_report import format_daily_report, send_daily_report
 
 CHANNEL_HEADER = "📩 <b>Новое анонимное сообщение:</b>"
 
@@ -104,6 +108,8 @@ async def cmd_help(message: types.Message):
         "⚡ <b>Управление и статус:</b>\n"
         "• /ping — проверка задержки и отклика бота\n"
         "• /stats — общая статистика и активность модераторов\n"
+        "• /today — топ модераторов за сегодня (Кишинёв)\n"
+        "• /daily_report — принудительно отправить ежедневный отчёт в чат\n"
         "• /archive — архив всех предложений (статистика, просмотр, экспорт)\n"
         "• /publish_approved — опубликовать ВСЕ одобренные посты из архива в канал\n"
         "• /delete <code>&lt;ID&gt;</code> — удалить пост из канала по ID (например /delete 123 или /delete #ID-123)\n"
@@ -685,6 +691,39 @@ async def cmd_delete_post(message: types.Message, bot: Bot):
             f"Причина: <code>{err_msg or 'Сообщение не найдено или уже удалено'}</code>",
             parse_mode="HTML",
         )
+
+
+@router.message(Command("today"))
+@router.message(Command("daily"))
+async def cmd_today_report(message: types.Message):
+    """
+    /today — show live moderation leaderboard for today (Europe/Chisinau).
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    tz = ZoneInfo("Europe/Chisinau")
+    now = datetime.now(tz)
+    today_str = now.strftime("%Y-%m-%d")
+    display_date = now.strftime("%d.%m.%Y")
+
+    stats = await get_daily_moderator_stats(today_str)
+    report_text = format_daily_report(stats, f"{display_date} (сегодня)")
+    await message.answer(report_text, parse_mode="HTML")
+
+
+@router.message(Command("daily_report"))
+async def cmd_trigger_daily_report(message: types.Message, bot: Bot):
+    """
+    /daily_report [YYYY-MM-DD] — manually trigger daily report in admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    args = message.text.split(maxsplit=1)
+    target_date = args[1].strip() if len(args) > 1 else None
+
+    await send_daily_report(bot, date_str=target_date)
 
 
 @router.message(Command("broadcast"))
