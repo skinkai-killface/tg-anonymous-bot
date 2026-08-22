@@ -741,6 +741,41 @@ async def get_archive_by_orig_id(orig_msg_id: int) -> dict | None:
         }
 
 
+async def get_archive_by_admin_msg_id(admin_msg_id: int) -> dict | None:
+    """Get full details of an archived post by admin_msg_id."""
+    async with _db.execute(
+        """
+        SELECT id, user_id, user_name, user_handle, content_type,
+               text_content, edited_text, media_json, status,
+               moderator_id, moderator_name, channel_msg_id,
+               orig_msg_id, admin_msg_id, created_at, moderated_at
+        FROM archive_posts WHERE admin_msg_id = ?
+        """,
+        (admin_msg_id,),
+    ) as cur:
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "user_name": row[2],
+            "user_handle": row[3],
+            "content_type": row[4],
+            "text_content": row[5],
+            "edited_text": row[6],
+            "media_list": json.loads(row[7]) if row[7] else [],
+            "status": row[8],
+            "moderator_id": row[9],
+            "moderator_name": row[10],
+            "channel_msg_id": row[11],
+            "orig_msg_id": row[12],
+            "admin_msg_id": row[13],
+            "created_at": row[14],
+            "moderated_at": row[15],
+        }
+
+
 async def get_archive_by_channel_msg_id(channel_msg_id: int) -> dict | None:
     """Get full details of an archived post by channel_msg_id."""
     async with _db.execute(
