@@ -69,8 +69,7 @@ async def check_for_updates() -> tuple[bool, str, str]:
         remote_hash = parts[0].strip()
 
         if remote_hash and local_hash and remote_hash != local_hash:
-            # Fetch latest commit so we can get the commit message
-            commit_msg = ""
+            # Fetch latest commits from origin/main
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "git", "fetch", "origin", "main",
@@ -79,11 +78,19 @@ async def check_for_updates() -> tuple[bool, str, str]:
                     stderr=asyncio.subprocess.PIPE,
                 )
                 await asyncio.wait_for(proc.communicate(), timeout=20.0)
+
+                # Check if origin/main has commits that local HEAD does NOT have
+                behind_count = await get_git_output(
+                    ["git", "rev-list", "HEAD..FETCH_HEAD", "--count"], bot_dir
+                )
+                if not behind_count.isdigit() or int(behind_count) == 0:
+                    return False, "", ""
+
                 commit_msg = await get_git_output(
                     ["git", "log", "-1", "--pretty=format:%s", "FETCH_HEAD"], bot_dir
                 )
             except Exception:
-                pass
+                return False, "", ""
 
             if not commit_msg:
                 commit_msg = f"Новый коммит {remote_hash[:7]}"
