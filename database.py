@@ -15,6 +15,7 @@ Tables
 - moderator_stats : admin_id (PK), approved, rejected, blocked
 - settings        : key (PK), value
 - post_queue      : id (PK AUTO), user_id, message_type, content_json, created_at
+- archive_posts   : full suggestion history with moderation metadata
 """
 
 import json
@@ -140,6 +141,195 @@ async def close_db() -> None:
     if _db:
         await _db.close()
         _db = None
+
+
+# ─────────────────────────── restore ────────────────────────────────
+
+async def restore_db(new_db_path: str) -> dict:
+    """
+    Replace the active database with a new SQLite file.
+
+    Steps:
+    1. Validate the file is a real SQLite database.
+    2. Close the current connection.
+    3. Rename current bot_data.db → bot_data.db.bak (safety net).
+    4. Copy the new file to bot_data.db.
+    5. Re-open the connection and rebuild caches.
+
+    Returns a dict with result info:
+      {'ok': bool, 'error': str | None, 'users': int, 'blocked': int}
+    """
+    import os
+    import shutil
+
+    global _db, _blocked_cache
+
+    # 1. Validate: SQLite files start with the magic header string
+    SQLITE_MAGIC = b"SQLite format 3\x00"
+    try:
+        with open(new_db_path, "rb") as f:
+            header = f.read(16)
+        if header != SQLITE_MAGIC:
+            return {"ok": False, "error": "Файл не является корректной SQLite-базой данных."}
+    except Exception as e:
+        return {"ok": False, "error": f"Не удалось прочитать файл: {e}"}
+
+    # 2. Close current connection
+    if _db:
+        try:
+            await _db.close()
+        except Exception:
+            pass
+        _db = None
+
+    # 3. Back up the current database
+    bak_path = DB_PATH + ".bak"
+    if os.path.exists(DB_PATH):
+        try:
+            shutil.copy2(DB_PATH, bak_path)
+            logger.info("Current DB backed up to %s", bak_path)
+        except Exception as e:
+            logger.warning("Could not backup current DB: %s", e)
+
+    # 4. Replace the database file
+    try:
+        shutil.copy2(new_db_path, DB_PATH)
+        logger.info("Database replaced with restored file from %s", new_db_path)
+    except Exception as e:
+        # Try to recover from backup
+        if os.path.exists(bak_path):
+            shutil.copy2(bak_path, DB_PATH)
+        return {"ok": False, "error": f"Не удалось заменить файл БД: {e}"}
+
+    # 5. Re-initialise connection and caches
+    try:
+        _db = await aiosqlite.connect(DB_PATH)
+        _db.row_factory = aiosqlite.Row
+
+        # Run migrations so any missing columns/tables are created
+        await _db.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '',
+                full_name TEXT DEFAULT '', first_seen TEXT DEFAULT '', is_active INTEGER DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS blocked_users (
+                user_id INTEGER PRIMARY KEY, reason TEXT DEFAULT '', blocked_at TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value INTEGER DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS moderator_stats (
+                admin_id INTEGER PRIMARY KEY, admin_name TEXT DEFAULT '',
+                approved INTEGER DEFAULT 0, rejected INTEGER DEFAULT 0, blocked INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT DEFAULT '');
+            CREATE TABLE IF NOT EXISTS post_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+                post_type TEXT, payload_json TEXT, created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS archive_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, user_name TEXT DEFAULT '', user_handle TEXT DEFAULT '',
+                content_type TEXT DEFAULT 'text', text_content TEXT DEFAULT '',
+                edited_text TEXT DEFAULT '', media_json TEXT DEFAULT '[]',
+                status TEXT DEFAULT 'pending', is_anonymous INTEGER DEFAULT 1,
+                moderator_id INTEGER DEFAULT NULL, moderator_name TEXT DEFAULT '',
+                channel_msg_id INTEGER DEFAULT NULL, orig_msg_id INTEGER DEFAULT NULL,
+                admin_msg_id INTEGER DEFAULT NULL, created_at TEXT DEFAULT '',
+                moderated_at TEXT DEFAULT ''
+            );
+        """)
+        # Add is_anonymous column if upgrading from older backup
+        try:
+            await _db.execute("ALTER TABLE archive_posts ADD COLUMN is_anonymous INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
+        await _db.commit()
+
+        # Rebuild blocked users cache
+        _blocked_cache.clear()
+        async with _db.execute("SELECT user_id FROM blocked_users") as cur:
+            async for row in cur:
+                _blocked_cache.add(row[0])
+
+        # Count users for report
+        async with _db.execute("SELECT COUNT(*) FROM users") as cur:
+            row = await cur.fetchone()
+            users_count = row[0] if row else 0
+
+        blocked_count = len(_blocked_cache)
+        logger.info(
+            "Database restored. Users: %d, Blocked: %d",
+            users_count, blocked_count,
+        )
+        return {"ok": True, "error": None, "users": users_count, "blocked": blocked_count}
+
+    except Exception as e:
+        logger.error("Failed to re-open restored DB: %s", e)
+        return {"ok": False, "error": f"БД заменена, но переподключение не удалось: {e}. Перезапустите бота."}
+
+
+async def import_archive_from_json(records: list[dict]) -> dict:
+    """
+    Import archive posts from a JSON export (as produced by /archive export).
+    Uses INSERT OR REPLACE so duplicate IDs are overwritten.
+
+    Returns {'ok': bool, 'imported': int, 'skipped': int, 'error': str | None}.
+    """
+    if _db is None:
+        return {"ok": False, "imported": 0, "skipped": 0, "error": "База данных не инициализирована."}
+
+    imported = 0
+    skipped = 0
+
+    for rec in records:
+        # Validate required fields
+        if not isinstance(rec, dict) or "id" not in rec:
+            skipped += 1
+            continue
+        try:
+            media_json = json.dumps(rec.get("media", []), ensure_ascii=False)
+            await _db.execute(
+                """
+                INSERT OR REPLACE INTO archive_posts (
+                    id, user_id, user_name, user_handle,
+                    content_type, text_content, edited_text, media_json,
+                    status, is_anonymous, moderator_id, moderator_name,
+                    channel_msg_id, orig_msg_id, admin_msg_id,
+                    created_at, moderated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rec.get("id"),
+                    rec.get("user_id"),
+                    rec.get("user_name", ""),
+                    rec.get("user_handle", ""),
+                    rec.get("content_type", "text"),
+                    rec.get("text_content", ""),
+                    rec.get("edited_text", ""),
+                    media_json,
+                    rec.get("status", "pending"),
+                    int(rec.get("is_anonymous", 1)),
+                    rec.get("moderator_id"),
+                    rec.get("moderator_name", ""),
+                    rec.get("channel_msg_id"),
+                    rec.get("orig_msg_id"),
+                    rec.get("admin_msg_id"),
+                    rec.get("created_at", ""),
+                    rec.get("moderated_at", ""),
+                ),
+            )
+            imported += 1
+        except Exception as e:
+            logger.warning("Skipped archive record id=%s: %s", rec.get("id"), e)
+            skipped += 1
+
+    try:
+        await _db.commit()
+    except Exception as e:
+        return {"ok": False, "imported": imported, "skipped": skipped, "error": f"Ошибка commit: {e}"}
+
+    logger.info("Archive import: %d imported, %d skipped", imported, skipped)
+    return {"ok": True, "imported": imported, "skipped": skipped, "error": None}
 
 
 # ─────────────────────── users (for broadcast) ──────────────────────

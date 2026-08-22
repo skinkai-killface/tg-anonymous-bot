@@ -31,6 +31,8 @@ from database import (
     get_recent_archive,
     get_archive_by_id,
     export_full_archive_json,
+    restore_db,
+    import_archive_from_json,
 )
 from config import ADMIN_CHAT_ID, BOT_VERSION
 
@@ -97,12 +99,16 @@ async def cmd_help(message: types.Message):
         "• /stats — общая статистика и активность модераторов\n"
         "• /archive — архив всех предложений (статистика, просмотр, экспорт)\n"
         "• /backup — скачать резервную копию базы данных SQLite\n"
+        "• /restore — инструкция по восстановлению из бэкапа\n"
         "• /broadcast <code>&lt;текст&gt;</code> — рассылка всем пользователям бота\n"
         "• /subcheck <code>[on/off]</code> — включить/выключить обязательную подписку на канал\n"
         "• /delay <code>[сек]</code> — задержка между автопубликациями в канал\n"
         "• /restart — мягкий перезапуск бота\n"
         "• /update — автообновление (git pull + pip + restart)\n"
         "• /help — список всех команд\n\n"
+        "♻️ <b>Восстановление бэкапа:</b>\n"
+        "• Отправьте файл <code>.db</code> в этот чат — полное восстановление БД\n"
+        "• Отправьте файл <code>.json</code> (экспорт /archive export) — импорт архива\n\n"
         "✏️ <b>Редактирование предложки:</b>\n"
         "• Ответьте на предложку командой <code>/edit Новый текст</code> чтобы изменить текст перед публикацией\n\n"
         "🚫 <b>Модерация пользователей:</b>\n"
@@ -158,6 +164,164 @@ async def cmd_backup(message: types.Message):
         ),
         parse_mode="HTML",
     )
+
+
+@router.message(Command("restore"))
+async def cmd_restore(message: types.Message):
+    """
+    /restore — show instructions on how to restore from backup.
+    Only works in the admin chat.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    await message.answer(
+        "♻️ <b>Восстановление из бэкапа</b>\n\n"
+        "Просто отправьте файл в этот чат — бот определит тип автоматически:\n\n"
+        "📦 <b>Файл <code>.db</code></b> — полное восстановление базы данных\n"
+        "<i>Восстановит: пользователей, блок-лист, статистику, архив, настройки</i>\n"
+        "⚠️ Текущая БД сохранится как <code>bot_data.db.bak</code> перед заменой.\n\n"
+        "📋 <b>Файл <code>.json</code></b> — импорт архива предложений\n"
+        "<i>Восстановит только таблицу архива (из /archive export)</i>\n"
+        "Пользователи, блок-лист и настройки не затрагиваются.\n\n"
+        "💡 <b>Как получить бэкап:</b>\n"
+        "• БД: /backup\n"
+        "• Архив: /archive export",
+        parse_mode="HTML",
+    )
+
+
+@router.message(F.chat.id == ADMIN_CHAT_ID, F.document)
+async def on_document_restore(message: types.Message, bot: Bot):
+    """
+    Intercepts documents sent to admin chat.
+    - .db files  → full database restore
+    - .json files → archive import
+    Other files are ignored.
+    """
+    doc = message.document
+    if not doc or not doc.file_name:
+        return
+
+    fname = doc.file_name.lower()
+
+    if fname.endswith(".db"):
+        await _handle_db_restore(message, bot, doc)
+    elif fname.endswith(".json"):
+        await _handle_json_import(message, bot, doc)
+    # Other file types — fall through to admin_reply_to_user handler
+
+
+async def _handle_db_restore(message: types.Message, bot: Bot, doc) -> None:
+    """Download and restore a .db backup file."""
+    import os
+    import tempfile
+
+    status = await message.reply(
+        "⏳ <b>Получен .db файл — начинаю восстановление базы данных...</b>",
+        parse_mode="HTML",
+    )
+
+    # Download to a temp file
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = tmp.name
+        file_info = await bot.get_file(doc.file_id)
+        await bot.download_file(file_info.file_path, tmp_path)
+    except Exception as e:
+        await status.edit_text(
+            f"❌ <b>Ошибка загрузки файла:</b> <code>{e}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Restore
+    result = await restore_db(tmp_path)
+
+    # Clean up temp file
+    try:
+        os.remove(tmp_path)
+    except Exception:
+        pass
+
+    if result["ok"]:
+        await status.edit_text(
+            f"✅ <b>База данных успешно восстановлена!</b>\n\n"
+            f"👥 Пользователей: <code>{result['users']}</code>\n"
+            f"🚫 Заблокированных: <code>{result['blocked']}</code>\n\n"
+            f"<i>Старая БД сохранена как <code>bot_data.db.bak</code></i>",
+            parse_mode="HTML",
+        )
+    else:
+        await status.edit_text(
+            f"❌ <b>Ошибка восстановления:</b>\n<code>{result['error']}</code>",
+            parse_mode="HTML",
+        )
+
+
+async def _handle_json_import(message: types.Message, bot: Bot, doc) -> None:
+    """Download and import an archive JSON export."""
+    import os
+    import json as _json
+    import tempfile
+
+    status = await message.reply(
+        "⏳ <b>Получен .json файл — начинаю импорт архива...</b>",
+        parse_mode="HTML",
+    )
+
+    # Download to a temp file
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+        file_info = await bot.get_file(doc.file_id)
+        await bot.download_file(file_info.file_path, tmp_path)
+    except Exception as e:
+        await status.edit_text(
+            f"❌ <b>Ошибка загрузки файла:</b> <code>{e}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Parse JSON
+    try:
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            records = _json.load(f)
+        if not isinstance(records, list):
+            raise ValueError("Ожидается JSON-массив (список постов)")
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        await status.edit_text(
+            f"❌ <b>Ошибка парсинга JSON:</b> <code>{e}</code>\n\n"
+            f"<i>Убедитесь что файл создан через /archive export</i>",
+            parse_mode="HTML",
+        )
+        return
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    # Import
+    result = await import_archive_from_json(records)
+
+    if result["ok"]:
+        await status.edit_text(
+            f"✅ <b>Архив успешно импортирован!</b>\n\n"
+            f"📥 Импортировано записей: <code>{result['imported']}</code>\n"
+            f"⚠️ Пропущено (невалидные): <code>{result['skipped']}</code>",
+            parse_mode="HTML",
+        )
+    else:
+        await status.edit_text(
+            f"❌ <b>Ошибка импорта:</b>\n<code>{result['error']}</code>\n"
+            f"Импортировано до ошибки: <code>{result['imported']}</code>",
+            parse_mode="HTML",
+        )
 
 
 @router.message(Command("archive"))
