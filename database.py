@@ -674,6 +674,92 @@ async def get_archive_by_id(archive_id: int) -> dict | None:
         }
 
 
+async def get_archive_by_orig_id(orig_msg_id: int) -> dict | None:
+    """Get full details of an archived post by orig_msg_id."""
+    async with _db.execute(
+        """
+        SELECT id, user_id, user_name, user_handle, content_type,
+               text_content, edited_text, media_json, status,
+               moderator_id, moderator_name, channel_msg_id,
+               orig_msg_id, admin_msg_id, created_at, moderated_at
+        FROM archive_posts WHERE orig_msg_id = ?
+        """,
+        (orig_msg_id,),
+    ) as cur:
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "user_name": row[2],
+            "user_handle": row[3],
+            "content_type": row[4],
+            "text_content": row[5],
+            "edited_text": row[6],
+            "media_list": json.loads(row[7]) if row[7] else [],
+            "status": row[8],
+            "moderator_id": row[9],
+            "moderator_name": row[10],
+            "channel_msg_id": row[11],
+            "orig_msg_id": row[12],
+            "admin_msg_id": row[13],
+            "created_at": row[14],
+            "moderated_at": row[15],
+        }
+
+
+async def get_archive_by_channel_msg_id(channel_msg_id: int) -> dict | None:
+    """Get full details of an archived post by channel_msg_id."""
+    async with _db.execute(
+        """
+        SELECT id, user_id, user_name, user_handle, content_type,
+               text_content, edited_text, media_json, status,
+               moderator_id, moderator_name, channel_msg_id,
+               orig_msg_id, admin_msg_id, created_at, moderated_at
+        FROM archive_posts WHERE channel_msg_id = ?
+        """,
+        (channel_msg_id,),
+    ) as cur:
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "user_name": row[2],
+            "user_handle": row[3],
+            "content_type": row[4],
+            "text_content": row[5],
+            "edited_text": row[6],
+            "media_list": json.loads(row[7]) if row[7] else [],
+            "status": row[8],
+            "moderator_id": row[9],
+            "moderator_name": row[10],
+            "channel_msg_id": row[11],
+            "orig_msg_id": row[12],
+            "admin_msg_id": row[13],
+            "created_at": row[14],
+            "moderated_at": row[15],
+        }
+
+
+async def update_archive_status_by_id(archive_id: int, status: str, channel_msg_id: int | None = None) -> None:
+    """Update status (and optionally channel_msg_id) of an archived post by archive id."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if channel_msg_id is not None:
+        await _db.execute(
+            "UPDATE archive_posts SET status = ?, channel_msg_id = ?, moderated_at = ? WHERE id = ?",
+            (status, channel_msg_id, now, archive_id),
+        )
+    else:
+        await _db.execute(
+            "UPDATE archive_posts SET status = ?, moderated_at = ? WHERE id = ?",
+            (status, now, archive_id),
+        )
+    await _db.commit()
+
+
 async def export_full_archive_json() -> str:
     """Export all archive rows as a formatted JSON string."""
     async with _db.execute(

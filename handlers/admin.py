@@ -35,6 +35,9 @@ from database import (
     restore_db,
     import_archive_from_json,
     get_approved_archive_posts,
+    get_archive_by_orig_id,
+    get_archive_by_channel_msg_id,
+    update_archive_status_by_id,
 )
 from config import ADMIN_CHAT_ID, CHANNEL_ID, BOT_VERSION
 
@@ -103,6 +106,7 @@ async def cmd_help(message: types.Message):
         "• /stats — общая статистика и активность модераторов\n"
         "• /archive — архив всех предложений (статистика, просмотр, экспорт)\n"
         "• /publish_approved — опубликовать ВСЕ одобренные посты из архива в канал\n"
+        "• /delete <code>&lt;ID&gt;</code> — удалить пост из канала по ID (например /delete 123 или /delete #ID-123)\n"
         "• /backup — скачать резервную копию базы данных SQLite\n"
         "• /restore — инструкция по восстановлению из бэкапа\n"
         "• /broadcast <code>&lt;текст&gt;</code> — рассылка всем пользователям бота\n"
@@ -473,6 +477,9 @@ async def cmd_publish_approved(message: types.Message, bot: Bot):
 
     for idx, item in enumerate(posts):
         try:
+            archive_id = item.get("id")
+            id_footer = f"\n\n🆔 <b>#ID-{archive_id}</b>" if archive_id else ""
+
             # Determine channel header
             if item.get("is_anonymous", True):
                 pub_header = CHANNEL_HEADER
@@ -485,44 +492,55 @@ async def cmd_publish_approved(message: types.Message, bot: Bot):
             ctype = item.get("content_type", "text")
             media_list = item.get("media_list", [])
 
+            sent_msg_id = None
+
             if ctype == "text":
-                post_text = f"{pub_header}\n\n{content}" if content else pub_header
-                await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML")
+                post_text = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+                sent = await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML")
+                sent_msg_id = sent.message_id
 
             elif ctype == "photo" and media_list:
-                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
-                await bot.send_photo(chat_id=CHANNEL_ID, photo=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                post_caption = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+                sent = await bot.send_photo(chat_id=CHANNEL_ID, photo=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                sent_msg_id = sent.message_id
 
             elif ctype == "video" and media_list:
-                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
-                await bot.send_video(chat_id=CHANNEL_ID, video=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                post_caption = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+                sent = await bot.send_video(chat_id=CHANNEL_ID, video=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                sent_msg_id = sent.message_id
 
             elif ctype == "animation" and media_list:
-                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
-                await bot.send_animation(chat_id=CHANNEL_ID, animation=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                post_caption = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+                sent = await bot.send_animation(chat_id=CHANNEL_ID, animation=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                sent_msg_id = sent.message_id
 
             elif ctype == "voice" and media_list:
-                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
-                await bot.send_voice(chat_id=CHANNEL_ID, voice=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                post_caption = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+                sent = await bot.send_voice(chat_id=CHANNEL_ID, voice=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                sent_msg_id = sent.message_id
 
             elif ctype == "video_note" and media_list:
-                await bot.send_message(chat_id=CHANNEL_ID, text=pub_header, parse_mode="HTML")
-                await bot.send_video_note(chat_id=CHANNEL_ID, video_note=media_list[0]["file_id"])
+                await bot.send_message(chat_id=CHANNEL_ID, text=f"{pub_header}{id_footer}", parse_mode="HTML")
+                sent = await bot.send_video_note(chat_id=CHANNEL_ID, video_note=media_list[0]["file_id"])
+                sent_msg_id = sent.message_id
 
             elif ctype == "audio" and media_list:
-                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
-                await bot.send_audio(chat_id=CHANNEL_ID, audio=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                post_caption = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+                sent = await bot.send_audio(chat_id=CHANNEL_ID, audio=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                sent_msg_id = sent.message_id
 
             elif ctype == "document" and media_list:
-                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
-                await bot.send_document(chat_id=CHANNEL_ID, document=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                post_caption = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+                sent = await bot.send_document(chat_id=CHANNEL_ID, document=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+                sent_msg_id = sent.message_id
 
             elif ctype == "sticker" and media_list:
-                await bot.send_message(chat_id=CHANNEL_ID, text=pub_header, parse_mode="HTML")
-                await bot.send_sticker(chat_id=CHANNEL_ID, sticker=media_list[0]["file_id"])
+                await bot.send_message(chat_id=CHANNEL_ID, text=f"{pub_header}{id_footer}", parse_mode="HTML")
+                sent = await bot.send_sticker(chat_id=CHANNEL_ID, sticker=media_list[0]["file_id"])
+                sent_msg_id = sent.message_id
 
             elif ctype == "album" and media_list:
-                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                post_caption = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
                 media_input = []
                 for m_idx, m in enumerate(media_list):
                     cap = post_caption if m_idx == 0 else None
@@ -531,7 +549,12 @@ async def cmd_publish_approved(message: types.Message, bot: Bot):
                     elif m.get("type") == "video":
                         media_input.append(InputMediaVideo(media=m["file_id"], caption=cap, parse_mode="HTML"))
                 if media_input:
-                    await bot.send_media_group(chat_id=CHANNEL_ID, media=media_input)
+                    sent_msgs = await bot.send_media_group(chat_id=CHANNEL_ID, media=media_input)
+                    if sent_msgs:
+                        sent_msg_id = sent_msgs[0].message_id
+
+            if archive_id and sent_msg_id:
+                await update_archive_status_by_id(archive_id, "approved", channel_msg_id=sent_msg_id)
 
             published += 1
         except Exception as e:
@@ -559,6 +582,109 @@ async def cmd_publish_approved(message: types.Message, bot: Bot):
         f"⚠️ Ошибок: <code>{errors}</code>",
         parse_mode="HTML",
     )
+
+
+@router.message(Command("delete"))
+@router.message(Command("del"))
+async def cmd_delete_post(message: types.Message, bot: Bot):
+    """
+    /delete <ID> (or reply to a message) — delete a published post from the channel by ID.
+    Usage:
+      /delete 123
+      /delete #ID-123
+      /delete (replying to a forwarded channel message)
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    args = message.text.split(maxsplit=1)
+    target_id_str = args[1].strip() if len(args) > 1 else ""
+
+    item = None
+
+    # 1. Check if replying to a message
+    if not target_id_str and message.reply_to_message:
+        reply = message.reply_to_message
+        # Check if forwarded from channel
+        if reply.forward_from_chat and reply.forward_from_chat.id == CHANNEL_ID and reply.forward_from_message_id:
+            item = await get_archive_by_channel_msg_id(reply.forward_from_message_id)
+            if not item:
+                # Try directly deleting the channel message ID
+                try:
+                    await bot.delete_message(chat_id=CHANNEL_ID, message_id=reply.forward_from_message_id)
+                    await message.reply(f"✅ Пост (сообщение #{reply.forward_from_message_id}) успешно удалён из канала!", parse_mode="HTML")
+                    return
+                except Exception as e:
+                    await message.reply(f"❌ Ошибка при удалении сообщения {reply.forward_from_message_id} из канала: {e}")
+                    return
+        else:
+            if reply.message_id:
+                item = await get_archive_by_orig_id(reply.message_id)
+
+    if not item and target_id_str:
+        # Clean string: remove '#', 'ID-', 'id-', etc.
+        clean_id = re.sub(r"[^\d]", "", target_id_str)
+        if clean_id.isdigit():
+            target_id = int(clean_id)
+            # First search by archive ID
+            item = await get_archive_by_id(target_id)
+            # If not found by archive ID, search by channel_msg_id
+            if not item:
+                item = await get_archive_by_channel_msg_id(target_id)
+
+    if not item:
+        await message.reply(
+            "⚠️ <b>Пост не найден.</b>\n\n"
+            "<b>Использование:</b>\n"
+            "• <code>/delete 123</code> (где 123 — ID поста, например #ID-123)\n"
+            "• Или ответьте (Reply) командой <code>/delete</code> на пересланный из канала пост.",
+            parse_mode="HTML",
+        )
+        return
+
+    archive_id = item["id"]
+    channel_msg_id = item.get("channel_msg_id")
+
+    if not channel_msg_id:
+        await message.reply(
+            f"⚠️ Пост <b>#ID-{archive_id}</b> найден в архиве, но у него не сохранён ID сообщения в канале (возможно, он был опубликован до этого обновления).",
+            parse_mode="HTML",
+        )
+        return
+
+    # Delete message(s) from channel
+    media_list = item.get("media_list", [])
+    content_type = item.get("content_type")
+
+    deleted_count = 0
+    err_msg = ""
+
+    try:
+        if content_type == "album" and media_list and len(media_list) > 1:
+            for offset in range(len(media_list)):
+                try:
+                    await bot.delete_message(chat_id=CHANNEL_ID, message_id=channel_msg_id + offset)
+                    deleted_count += 1
+                except Exception:
+                    pass
+        else:
+            await bot.delete_message(chat_id=CHANNEL_ID, message_id=channel_msg_id)
+            deleted_count = 1
+    except Exception as e:
+        err_msg = str(e)
+
+    if deleted_count > 0:
+        await update_archive_status_by_id(archive_id, "deleted")
+        await message.reply(
+            f"🗑 <b>Пост #ID-{archive_id} успешно удалён из канала!</b>",
+            parse_mode="HTML",
+        )
+    else:
+        await message.reply(
+            f"❌ <b>Не удалось удалить пост #ID-{archive_id} из канала.</b>\n\n"
+            f"Причина: <code>{err_msg or 'Сообщение не найдено или уже удалено'}</code>",
+            parse_mode="HTML",
+        )
 
 
 @router.message(Command("broadcast"))

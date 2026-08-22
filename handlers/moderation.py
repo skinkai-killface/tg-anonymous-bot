@@ -19,6 +19,7 @@ from database import (
     update_archive_status,
     update_archive_text,
     get_post_anonymity,
+    get_archive_by_orig_id,
 )
 from album import pop_album, get_album
 
@@ -195,6 +196,11 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
         return
 
     try:
+        # Get archive post ID
+        archive_item = await get_archive_by_orig_id(orig_msg_id)
+        archive_id = archive_item["id"] if archive_item else None
+        id_footer = f"\n\n🆔 <b>#ID-{archive_id}</b>" if archive_id else ""
+
         # Determine channel header (Anonymous or with Author Credit)
         is_anon = await get_post_anonymity(orig_msg_id)
         if is_anon:
@@ -208,11 +214,13 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
             except Exception:
                 pub_header = f'📩 <b>Новое сообщение от <a href="tg://user?id={user_id}">автора</a>:</b>'
 
+        channel_msg_id = None
+
         # Check if this is an album
         album_items = pop_album(orig_msg_id)
         if album_items:
             album_caption = strip_header(source_msg.text or "")
-            post_caption = f"{pub_header}\n\n{album_caption}" if album_caption else pub_header
+            post_caption = f"{pub_header}\n\n{album_caption}{id_footer}" if album_caption else f"{pub_header}{id_footer}"
             media_list = []
             for idx, item in enumerate(album_items):
                 cap = post_caption if idx == 0 else None
@@ -221,90 +229,101 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
                 elif item["type"] == "video":
                     media_list.append(InputMediaVideo(media=item["file_id"], caption=cap, parse_mode="HTML"))
             if media_list:
-                await bot.send_media_group(chat_id=CHANNEL_ID, media=media_list)
+                sent_msgs = await bot.send_media_group(chat_id=CHANNEL_ID, media=media_list)
+                if sent_msgs:
+                    channel_msg_id = sent_msgs[0].message_id
 
         elif source_msg.text:
             content = strip_header(source_msg.text)
-            post_text = f"{pub_header}\n\n{content}" if content else pub_header
-            await bot.send_message(
+            post_text = f"{pub_header}\n\n{content}{id_footer}" if content else f"{pub_header}{id_footer}"
+            sent = await bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=post_text,
                 parse_mode="HTML",
             )
+            channel_msg_id = sent.message_id
         elif source_msg.sticker:
             await bot.send_message(
                 chat_id=CHANNEL_ID,
-                text=pub_header,
+                text=f"{pub_header}{id_footer}",
                 parse_mode="HTML",
             )
-            await bot.send_sticker(
+            sent = await bot.send_sticker(
                 chat_id=CHANNEL_ID,
                 sticker=source_msg.sticker.file_id,
             )
+            channel_msg_id = sent.message_id
         elif source_msg.photo:
             caption = strip_header(source_msg.caption or "")
-            post_caption = f"{pub_header}\n\n{caption}" if caption else pub_header
-            await bot.send_photo(
+            post_caption = f"{pub_header}\n\n{caption}{id_footer}" if caption else f"{pub_header}{id_footer}"
+            sent = await bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=source_msg.photo[-1].file_id,
                 caption=post_caption,
                 parse_mode="HTML",
             )
+            channel_msg_id = sent.message_id
         elif source_msg.video:
             caption = strip_header(source_msg.caption or "")
-            post_caption = f"{pub_header}\n\n{caption}" if caption else pub_header
-            await bot.send_video(
+            post_caption = f"{pub_header}\n\n{caption}{id_footer}" if caption else f"{pub_header}{id_footer}"
+            sent = await bot.send_video(
                 chat_id=CHANNEL_ID,
                 video=source_msg.video.file_id,
                 caption=post_caption,
                 parse_mode="HTML",
             )
+            channel_msg_id = sent.message_id
         elif source_msg.animation:
             caption = strip_header(source_msg.caption or "")
-            post_caption = f"{pub_header}\n\n{caption}" if caption else pub_header
-            await bot.send_animation(
+            post_caption = f"{pub_header}\n\n{caption}{id_footer}" if caption else f"{pub_header}{id_footer}"
+            sent = await bot.send_animation(
                 chat_id=CHANNEL_ID,
                 animation=source_msg.animation.file_id,
                 caption=post_caption,
                 parse_mode="HTML",
             )
+            channel_msg_id = sent.message_id
         elif source_msg.voice:
             caption = strip_header(source_msg.caption or "")
-            post_caption = f"{pub_header}\n\n{caption}" if caption else pub_header
-            await bot.send_voice(
+            post_caption = f"{pub_header}\n\n{caption}{id_footer}" if caption else f"{pub_header}{id_footer}"
+            sent = await bot.send_voice(
                 chat_id=CHANNEL_ID,
                 voice=source_msg.voice.file_id,
                 caption=post_caption,
                 parse_mode="HTML",
             )
+            channel_msg_id = sent.message_id
         elif source_msg.video_note:
             await bot.send_message(
                 chat_id=CHANNEL_ID,
-                text=pub_header,
+                text=f"{pub_header}{id_footer}",
                 parse_mode="HTML",
             )
-            await bot.send_video_note(
+            sent = await bot.send_video_note(
                 chat_id=CHANNEL_ID,
                 video_note=source_msg.video_note.file_id,
             )
+            channel_msg_id = sent.message_id
         elif source_msg.audio:
             caption = strip_header(source_msg.caption or "")
-            post_caption = f"{pub_header}\n\n{caption}" if caption else pub_header
-            await bot.send_audio(
+            post_caption = f"{pub_header}\n\n{caption}{id_footer}" if caption else f"{pub_header}{id_footer}"
+            sent = await bot.send_audio(
                 chat_id=CHANNEL_ID,
                 audio=source_msg.audio.file_id,
                 caption=post_caption,
                 parse_mode="HTML",
             )
+            channel_msg_id = sent.message_id
         elif source_msg.document:
             caption = strip_header(source_msg.caption or "")
-            post_caption = f"{pub_header}\n\n{caption}" if caption else pub_header
-            await bot.send_document(
+            post_caption = f"{pub_header}\n\n{caption}{id_footer}" if caption else f"{pub_header}{id_footer}"
+            sent = await bot.send_document(
                 chat_id=CHANNEL_ID,
                 document=source_msg.document.file_id,
                 caption=post_caption,
                 parse_mode="HTML",
             )
+            channel_msg_id = sent.message_id
 
         # Record stats & archive
         await increment_stat("approved")
@@ -314,6 +333,7 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
             status="approved",
             moderator_id=callback.from_user.id,
             moderator_name=callback.from_user.full_name,
+            channel_msg_id=channel_msg_id,
         )
 
         # Update the admin message to show it was approved
