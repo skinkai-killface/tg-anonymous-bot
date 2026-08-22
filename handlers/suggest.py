@@ -201,12 +201,13 @@ async def handle_text(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
+    safe_text = html.escape(message.text)
 
     sent = await bot.send_message(
         chat_id=ADMIN_CHAT_ID,
         text=f"📩 <b>Новое предложение</b>\n"
              f"{author}\n\n"
-             f"{message.text}",
+             f"{safe_text}",
         parse_mode="HTML",
         reply_markup=moderation_keyboard(message.from_user.id, message.message_id),
     )
@@ -216,7 +217,7 @@ async def handle_text(message: types.Message, bot: Bot):
         user_name=message.from_user.full_name or "",
         user_handle=message.from_user.username or "",
         content_type="text",
-        text_content=message.text,
+        text_content=safe_text,
         media_list=[],
         orig_msg_id=message.message_id,
         admin_msg_id=sent.message_id,
@@ -282,7 +283,7 @@ async def handle_album(message: types.Message, bot: Bot, album: list[types.Messa
         return
 
     author = get_author_header(first_msg.from_user)
-    user_caption = first_msg.caption or ""
+    user_caption = html.escape(first_msg.caption or "")
     header = f"📩 <b>Новое предложение (альбом: {len(album)} шт.)</b>\n{author}"
     full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
@@ -340,7 +341,7 @@ async def handle_photo(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    user_caption = message.caption or ""
+    user_caption = html.escape(message.caption or "")
     header = f"📩 <b>Новое предложение (фото)</b>\n{author}"
     full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
@@ -381,7 +382,7 @@ async def handle_video(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    user_caption = message.caption or ""
+    user_caption = html.escape(message.caption or "")
     header = f"📩 <b>Новое предложение (видео)</b>\n{author}"
     full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
@@ -420,7 +421,7 @@ async def handle_animation(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    user_caption = message.caption or ""
+    user_caption = html.escape(message.caption or "")
     header = f"📩 <b>Новое предложение (GIF)</b>\n{author}"
     full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
@@ -459,7 +460,7 @@ async def handle_voice(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    user_caption = message.caption or ""
+    user_caption = html.escape(message.caption or "")
     header = f"📩 <b>Новое предложение (голосовое)</b>\n{author}"
     full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
@@ -537,7 +538,7 @@ async def handle_audio(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    user_caption = message.caption or ""
+    user_caption = html.escape(message.caption or "")
     header = f"📩 <b>Новое предложение (аудио)</b>\n{author}"
     full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 
@@ -576,7 +577,7 @@ async def handle_document(message: types.Message, bot: Bot):
         return
 
     author = get_author_header(message.from_user)
-    user_caption = message.caption or ""
+    user_caption = html.escape(message.caption or "")
     header = f"📩 <b>Новое предложение (документ)</b>\n{author}"
     full_caption = f"{header}\n\n{user_caption}" if user_caption else header
 

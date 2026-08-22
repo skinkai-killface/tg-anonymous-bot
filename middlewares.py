@@ -113,6 +113,18 @@ class ThrottlingMiddleware(BaseMiddleware):
         self.cooldown = cooldown
         self._user_timestamps: Dict[int, float] = {}
         self._user_violations: Dict[int, list[float]] = {}
+        self._last_cleanup = time.monotonic()
+
+    def _cleanup_stale_entries(self, now: float) -> None:
+        """Purge entries older than 3600s to avoid memory leaks."""
+        if now - self._last_cleanup < 300:  # Run cleanup every 5 minutes
+            return
+        self._last_cleanup = now
+        stale_threshold = now - 3600
+        stale_users = [u for u, ts in self._user_timestamps.items() if ts < stale_threshold]
+        for u in stale_users:
+            self._user_timestamps.pop(u, None)
+            self._user_violations.pop(u, None)
 
     async def __call__(
         self,
@@ -134,6 +146,7 @@ class ThrottlingMiddleware(BaseMiddleware):
 
         user_id = event.from_user.id
         now = time.monotonic()
+        self._cleanup_stale_entries(now)
         last = self._user_timestamps.get(user_id, 0)
 
         if now - last < self.cooldown:

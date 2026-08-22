@@ -20,8 +20,8 @@ from config import ADMIN_CHAT_ID
 
 logger = logging.getLogger(__name__)
 
-# Check interval in seconds (every 30 seconds)
-CHECK_INTERVAL_SECONDS = 30
+# Check interval in seconds (every 5 minutes)
+CHECK_INTERVAL_SECONDS = 300
 
 # In-memory tracking of the last commit hash we notified admins about
 _last_notified_hash: str | None = None

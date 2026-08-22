@@ -23,6 +23,7 @@ from database import (
     get_archive_by_admin_msg_id,
 )
 from album import pop_album, get_album
+from permissions import check_callback_admin, check_admin
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -108,10 +109,12 @@ def _release_message(message_id: int) -> None:
 
 
 @router.callback_query(F.data.startswith("edit_text:"))
-async def on_edit_text_button(callback: types.CallbackQuery):
+async def on_edit_text_button(callback: types.CallbackQuery, bot: Bot):
     """
     Admin clicked 'Edit text' button — show a quick alert / hint.
     """
+    if not await check_callback_admin(callback, bot):
+        return
     await callback.answer(
         "✏️ Чтобы изменить текст, ответьте (Reply) на это сообщение командой:\n/edit Новый текст",
         show_alert=True,
@@ -124,6 +127,9 @@ async def cmd_edit_suggestion(message: types.Message, bot: Bot):
     /edit <new text> — edit the text or caption of a replied suggestion in admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    if not await check_admin(message, bot):
         return
 
     if not message.reply_to_message:
@@ -187,9 +193,17 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
     """
     Admin pressed "Approve". Publish the content to the channel with the anonymous header.
     """
-    _, user_id_str, orig_msg_id_str = callback.data.split(":")
-    user_id = int(user_id_str)
-    orig_msg_id = int(orig_msg_id_str)
+    if not await check_callback_admin(callback, bot):
+        return
+
+    try:
+        _, user_id_str, orig_msg_id_str = callback.data.split(":")
+        user_id = int(user_id_str)
+        orig_msg_id = int(orig_msg_id_str)
+    except (ValueError, TypeError):
+        await callback.answer("⚠️ Ошибка парсинга данных.", show_alert=True)
+        return
+
     source_msg = callback.message
 
     # Anti-Double-Click
@@ -211,7 +225,9 @@ async def on_approve(callback: types.CallbackQuery, bot: Bot):
         if archive_item:
             user_content = archive_item.get("edited_text") or archive_item.get("text_content") or ""
         if not user_content:
-            user_content = strip_header(source_msg.text or source_msg.caption or "")
+            user_content = html.escape(strip_header(source_msg.text or source_msg.caption or ""))
+        else:
+            user_content = html.escape(user_content)
 
         # Determine channel header (Anonymous or with Author Credit)
         is_anon = await get_post_anonymity(orig_msg_id)
@@ -364,9 +380,17 @@ async def on_reject(callback: types.CallbackQuery, bot: Bot):
     """
     Admin pressed "Reject". Mark as rejected and notify the user.
     """
-    _, user_id_str, orig_msg_id_str = callback.data.split(":")
-    user_id = int(user_id_str)
-    orig_msg_id = int(orig_msg_id_str)
+    if not await check_callback_admin(callback, bot):
+        return
+
+    try:
+        _, user_id_str, orig_msg_id_str = callback.data.split(":")
+        user_id = int(user_id_str)
+        orig_msg_id = int(orig_msg_id_str)
+    except (ValueError, TypeError):
+        await callback.answer("⚠️ Ошибка парсинга данных.", show_alert=True)
+        return
+
     source_msg = callback.message
 
     if not await _acquire_message(source_msg.message_id):
@@ -407,9 +431,17 @@ async def on_block(callback: types.CallbackQuery, bot: Bot):
     """
     Admin pressed "Block". Block the user and reject the message.
     """
-    _, user_id_str, orig_msg_id_str = callback.data.split(":")
-    user_id = int(user_id_str)
-    orig_msg_id = int(orig_msg_id_str)
+    if not await check_callback_admin(callback, bot):
+        return
+
+    try:
+        _, user_id_str, orig_msg_id_str = callback.data.split(":")
+        user_id = int(user_id_str)
+        orig_msg_id = int(orig_msg_id_str)
+    except (ValueError, TypeError):
+        await callback.answer("⚠️ Ошибка парсинга данных.", show_alert=True)
+        return
+
     source_msg = callback.message
 
     if not await _acquire_message(source_msg.message_id):

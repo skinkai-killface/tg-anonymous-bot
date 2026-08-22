@@ -44,6 +44,7 @@ from database import (
 )
 from config import ADMIN_CHAT_ID, CHANNEL_ID, BOT_VERSION
 from daily_report import format_daily_report, send_daily_report
+from permissions import check_owner, check_admin, check_callback_admin, is_chat_owner
 
 CHANNEL_HEADER = "📩 <b>Новое анонимное сообщение:</b>"
 
@@ -96,11 +97,13 @@ def extract_user_id(message: types.Message) -> int | None:
 
 
 @router.message(Command("help"))
-async def cmd_help(message: types.Message):
+async def cmd_help(message: types.Message, bot: Bot):
     """
     /help — list all available commands in the admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_admin(message, bot):
         return
 
     text = (
@@ -137,7 +140,7 @@ async def cmd_help(message: types.Message):
 
 
 @router.message(Command("ping"))
-async def cmd_ping(message: types.Message):
+async def cmd_ping(message: types.Message, bot: Bot):
     """
     /ping — check bot latency and responsiveness.
     Only works in the admin chat.
@@ -153,11 +156,13 @@ async def cmd_ping(message: types.Message):
 
 
 @router.message(Command("backup"))
-async def cmd_backup(message: types.Message):
+async def cmd_backup(message: types.Message, bot: Bot):
     """
     /backup — send bot_data.db file directly to the admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     db_path = "bot_data.db"
@@ -182,12 +187,14 @@ async def cmd_backup(message: types.Message):
 
 
 @router.message(Command("restore"))
-async def cmd_restore(message: types.Message):
+async def cmd_restore(message: types.Message, bot: Bot):
     """
     /restore — show instructions on how to restore from backup.
     Only works in the admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     await message.answer(
@@ -214,6 +221,9 @@ async def on_document_restore(message: types.Message, bot: Bot):
     - .json files → archive import
     Other files are ignored.
     """
+    if not await check_owner(message, bot):
+        return
+
     doc = message.document
     if not doc or not doc.file_name:
         return
@@ -348,6 +358,8 @@ async def cmd_archive(message: types.Message, bot: Bot):
     """
     if message.chat.id != ADMIN_CHAT_ID:
         return
+    if not await check_admin(message, bot):
+        return
 
     args = message.text.split(maxsplit=1)
     subcmd = args[1].strip() if len(args) > 1 else ""
@@ -357,6 +369,8 @@ async def cmd_archive(message: types.Message, bot: Bot):
         return
 
     if subcmd == "export":
+        if not await check_owner(message, bot):
+            return
         json_data = await export_full_archive_json()
         export_file = "archive_export.json"
         with open(export_file, "w", encoding="utf-8") as f:
@@ -465,6 +479,8 @@ async def cmd_publish_approved(message: types.Message, bot: Bot):
     /publish_approved — send all approved suggestions from archive to CHANNEL_ID.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     posts = await get_approved_archive_posts()
@@ -602,6 +618,8 @@ async def cmd_delete_post(message: types.Message, bot: Bot):
     """
     if message.chat.id != ADMIN_CHAT_ID:
         return
+    if not await check_owner(message, bot):
+        return
 
     args = message.text.split(maxsplit=1)
     target_id_str = args[1].strip() if len(args) > 1 else ""
@@ -695,11 +713,13 @@ async def cmd_delete_post(message: types.Message, bot: Bot):
 
 @router.message(Command("today"))
 @router.message(Command("daily"))
-async def cmd_today_report(message: types.Message):
+async def cmd_today_report(message: types.Message, bot: Bot):
     """
     /today — show live moderation leaderboard for today (Europe/Chisinau).
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_admin(message, bot):
         return
 
     tz = ZoneInfo("Europe/Chisinau")
@@ -719,6 +739,8 @@ async def cmd_trigger_daily_report(message: types.Message, bot: Bot):
     """
     if message.chat.id != ADMIN_CHAT_ID:
         return
+    if not await check_admin(message, bot):
+        return
 
     args = message.text.split(maxsplit=1)
     target_date = args[1].strip() if len(args) > 1 else None
@@ -732,6 +754,8 @@ async def cmd_broadcast(message: types.Message, bot: Bot):
     /broadcast <text> (or reply to a media/text) — send a broadcast to all registered users.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     # Check if replying to a message or has text argument
@@ -816,11 +840,13 @@ async def cmd_broadcast(message: types.Message, bot: Bot):
 
 
 @router.message(Command("delay"))
-async def cmd_delay(message: types.Message):
+async def cmd_delay(message: types.Message, bot: Bot):
     """
     /delay [seconds] — configure publishing delay between approved posts.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     args = message.text.split(maxsplit=1)
@@ -848,11 +874,13 @@ async def cmd_delay(message: types.Message):
 
 
 @router.message(Command("subcheck"))
-async def cmd_subcheck(message: types.Message):
+async def cmd_subcheck(message: types.Message, bot: Bot):
     """
     /subcheck [on/off] — toggle mandatory channel subscription check.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     args = message.text.split(maxsplit=1)
@@ -879,12 +907,14 @@ async def cmd_subcheck(message: types.Message):
 
 
 @router.message(Command("restart"))
-async def cmd_restart(message: types.Message):
+async def cmd_restart(message: types.Message, bot: Bot):
     """
     /restart — gracefully restart the bot process.
     Only works in the admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     await message.answer("🔄 <b>Перезапуск бота...</b>", parse_mode="HTML")
@@ -900,6 +930,12 @@ from auto_updater import run_update_process
 @router.callback_query(F.data == "apply_update")
 async def on_apply_update_callback(callback: types.CallbackQuery, bot: Bot):
     """Admin clicked the 'Update Bot Now' inline button."""
+    if not await check_callback_admin(callback, bot):
+        return
+    # Additional owner check for destructive update action
+    if not await is_chat_owner(bot, callback.from_user.id, callback.message.chat.id):
+        await callback.answer("🔒 Обновление доступно только владельцу.", show_alert=True)
+        return
     await callback.answer()
     status_msg = await callback.message.reply("🔄 <b>Запуск обновления бота...</b>\n\n⏳ <code>git pull origin main</code>", parse_mode="HTML")
     await run_update_process(status_msg, bot)
@@ -913,6 +949,8 @@ async def cmd_update(message: types.Message, bot: Bot):
     """
     if message.chat.id != ADMIN_CHAT_ID:
         return
+    if not await check_owner(message, bot):
+        return
 
     admin_name = message.from_user.full_name
     logger.info(f"Update initiated by admin {message.from_user.id} ({admin_name})")
@@ -922,12 +960,14 @@ async def cmd_update(message: types.Message, bot: Bot):
 
 
 @router.message(Command("ban"))
-async def cmd_ban(message: types.Message):
+async def cmd_ban(message: types.Message, bot: Bot):
     """
     /ban <user_id> — block a user by their Telegram ID.
     Only works in the admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     args = message.text.split(maxsplit=1)
@@ -941,12 +981,14 @@ async def cmd_ban(message: types.Message):
 
 
 @router.message(Command("unban"))
-async def cmd_unban(message: types.Message):
+async def cmd_unban(message: types.Message, bot: Bot):
     """
     /unban <user_id> — unblock a user by their Telegram ID.
     Only works in the admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_owner(message, bot):
         return
 
     args = message.text.split(maxsplit=1)
@@ -962,12 +1004,14 @@ async def cmd_unban(message: types.Message):
 
 
 @router.message(Command("banlist"))
-async def cmd_banlist(message: types.Message):
+async def cmd_banlist(message: types.Message, bot: Bot):
     """
     /banlist — show all blocked users.
     Only works in the admin chat.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_admin(message, bot):
         return
 
     blocked = await get_blocked_list()
@@ -983,11 +1027,13 @@ async def cmd_banlist(message: types.Message):
 
 
 @router.message(Command("stats"))
-async def cmd_stats(message: types.Message):
+async def cmd_stats(message: types.Message, bot: Bot):
     """
     /stats — show bot statistics.
     """
     if message.chat.id != ADMIN_CHAT_ID:
+        return
+    if not await check_admin(message, bot):
         return
 
     stats = await get_stats()
@@ -1028,6 +1074,9 @@ async def admin_reply_to_user(message: types.Message, bot: Bot):
     When an admin replies to a moderation message in the admin chat,
     send their reply directly to the user in PM.
     """
+    if not await check_admin(message, bot):
+        return
+
     # Ignore commands
     if message.text and message.text.startswith("/"):
         return

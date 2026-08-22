@@ -18,6 +18,7 @@ Tables
 - archive_posts   : full suggestion history with moderation metadata
 """
 
+import os
 import json
 import logging
 from datetime import datetime
@@ -26,7 +27,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "bot_data.db"
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.db")
 
 # In-memory cache of blocked user IDs for O(1) middleware checks.
 _blocked_cache: set[int] = set()
@@ -458,10 +459,16 @@ async def get_stats() -> dict[str, int]:
 
 # ────────────────────── moderator stats ─────────────────────────────
 
+_ALLOWED_MOD_ACTIONS = frozenset({"approved", "rejected", "blocked"})
+
+
 async def record_moderation(admin_id: int, admin_name: str, action: str) -> None:
     """
     action: 'approved' | 'rejected' | 'blocked'
     """
+    if action not in _ALLOWED_MOD_ACTIONS:
+        raise ValueError(f"Invalid moderation action: {action!r}")
+    # action is validated against whitelist above, safe to interpolate as column name
     await _db.execute(
         f"""INSERT INTO moderator_stats (admin_id, admin_name, {action})
             VALUES (?, ?, 1)
@@ -539,16 +546,16 @@ async def add_to_queue(user_id: int, post_type: str, payload: dict) -> int:
 
 
 async def pop_from_queue() -> tuple[int, int, str, dict] | None:
-    """Fetch and remove the oldest pending post in queue."""
-    async with _db.execute("SELECT id, user_id, post_type, payload_json FROM post_queue ORDER BY id ASC LIMIT 1") as cur:
+    """Atomically fetch and remove the oldest pending post in queue."""
+    # Use a subquery to SELECT + DELETE atomically, preventing race conditions
+    async with _db.execute(
+        "DELETE FROM post_queue WHERE id = (SELECT id FROM post_queue ORDER BY id ASC LIMIT 1) RETURNING id, user_id, post_type, payload_json"
+    ) as cur:
         row = await cur.fetchone()
-        if not row:
-            return None
-        post_id, user_id, post_type, payload_str = row[0], row[1], row[2], row[3]
-
-    await _db.execute("DELETE FROM post_queue WHERE id = ?", (post_id,))
+    if not row:
+        return None
     await _db.commit()
-    return post_id, user_id, post_type, json.loads(payload_str)
+    return row[0], row[1], row[2], json.loads(row[3])
 
 
 async def get_queue_length() -> int:
