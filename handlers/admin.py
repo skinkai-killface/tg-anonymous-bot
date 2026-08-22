@@ -11,9 +11,10 @@ import time
 import asyncio
 import subprocess
 import logging
+import html
 from aiogram import Router, types, Bot, F
 from aiogram.filters import Command
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from database import (
@@ -33,8 +34,11 @@ from database import (
     export_full_archive_json,
     restore_db,
     import_archive_from_json,
+    get_approved_archive_posts,
 )
-from config import ADMIN_CHAT_ID, BOT_VERSION
+from config import ADMIN_CHAT_ID, CHANNEL_ID, BOT_VERSION
+
+CHANNEL_HEADER = "📩 <b>Новое анонимное сообщение:</b>"
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -98,6 +102,7 @@ async def cmd_help(message: types.Message):
         "• /ping — проверка задержки и отклика бота\n"
         "• /stats — общая статистика и активность модераторов\n"
         "• /archive — архив всех предложений (статистика, просмотр, экспорт)\n"
+        "• /publish_approved — опубликовать ВСЕ одобренные посты из архива в канал\n"
         "• /backup — скачать резервную копию базы данных SQLite\n"
         "• /restore — инструкция по восстановлению из бэкапа\n"
         "• /broadcast <code>&lt;текст&gt;</code> — рассылка всем пользователям бота\n"
@@ -337,6 +342,10 @@ async def cmd_archive(message: types.Message, bot: Bot):
     args = message.text.split(maxsplit=1)
     subcmd = args[1].strip() if len(args) > 1 else ""
 
+    if subcmd in ("publish", "publish_approved", "send"):
+        await cmd_publish_approved(message, bot)
+        return
+
     if subcmd == "export":
         json_data = await export_full_archive_json()
         export_file = "archive_export.json"
@@ -433,7 +442,121 @@ async def cmd_archive(message: types.Message, bot: Bot):
         f"{recent_text}\n\n"
         f"💡 <b>Команды архива:</b>\n"
         f"• <code>/archive &lt;ID&gt;</code> — открыть полный пост с медиа\n"
-        f"• <code>/archive export</code> — скачать весь архив в JSON",
+        f"• <code>/archive export</code> — скачать весь архив в JSON\n"
+        f"• <code>/publish_approved</code> — опубликовать все одобренные посты в канал",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("publish_approved"))
+@router.message(Command("publish"))
+async def cmd_publish_approved(message: types.Message, bot: Bot):
+    """
+    /publish_approved — send all approved suggestions from archive to CHANNEL_ID.
+    """
+    if message.chat.id != ADMIN_CHAT_ID:
+        return
+
+    posts = await get_approved_archive_posts()
+    if not posts:
+        await message.answer("⚠️ В архиве нет одобренных предложений (status='approved').", parse_mode="HTML")
+        return
+
+    status_msg = await message.answer(
+        f"🚀 <b>Публикация одобренных постов из архива...</b>\n\n"
+        f"📊 Найдено одобренных записей: <code>{len(posts)}</code>",
+        parse_mode="HTML",
+    )
+
+    published = 0
+    errors = 0
+
+    for idx, item in enumerate(posts):
+        try:
+            # Determine channel header
+            if item.get("is_anonymous", True):
+                pub_header = CHANNEL_HEADER
+            else:
+                name = html.escape(item.get("user_name") or "Пользователь")
+                tag = f" (@{item['user_handle']})" if item.get("user_handle") else ""
+                pub_header = f'📩 <b>Новое сообщение от <a href="tg://user?id={item["user_id"]}">{name}</a>{tag}:</b>'
+
+            content = item.get("edited_text") or item.get("text_content") or ""
+            ctype = item.get("content_type", "text")
+            media_list = item.get("media_list", [])
+
+            if ctype == "text":
+                post_text = f"{pub_header}\n\n{content}" if content else pub_header
+                await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML")
+
+            elif ctype == "photo" and media_list:
+                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                await bot.send_photo(chat_id=CHANNEL_ID, photo=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+
+            elif ctype == "video" and media_list:
+                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                await bot.send_video(chat_id=CHANNEL_ID, video=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+
+            elif ctype == "animation" and media_list:
+                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                await bot.send_animation(chat_id=CHANNEL_ID, animation=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+
+            elif ctype == "voice" and media_list:
+                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                await bot.send_voice(chat_id=CHANNEL_ID, voice=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+
+            elif ctype == "video_note" and media_list:
+                await bot.send_message(chat_id=CHANNEL_ID, text=pub_header, parse_mode="HTML")
+                await bot.send_video_note(chat_id=CHANNEL_ID, video_note=media_list[0]["file_id"])
+
+            elif ctype == "audio" and media_list:
+                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                await bot.send_audio(chat_id=CHANNEL_ID, audio=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+
+            elif ctype == "document" and media_list:
+                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                await bot.send_document(chat_id=CHANNEL_ID, document=media_list[0]["file_id"], caption=post_caption, parse_mode="HTML")
+
+            elif ctype == "sticker" and media_list:
+                await bot.send_message(chat_id=CHANNEL_ID, text=pub_header, parse_mode="HTML")
+                await bot.send_sticker(chat_id=CHANNEL_ID, sticker=media_list[0]["file_id"])
+
+            elif ctype == "album" and media_list:
+                post_caption = f"{pub_header}\n\n{content}" if content else pub_header
+                media_input = []
+                for m_idx, m in enumerate(media_list):
+                    cap = post_caption if m_idx == 0 else None
+                    if m.get("type") == "photo":
+                        media_input.append(InputMediaPhoto(media=m["file_id"], caption=cap, parse_mode="HTML"))
+                    elif m.get("type") == "video":
+                        media_input.append(InputMediaVideo(media=m["file_id"], caption=cap, parse_mode="HTML"))
+                if media_input:
+                    await bot.send_media_group(chat_id=CHANNEL_ID, media=media_input)
+
+            published += 1
+        except Exception as e:
+            logger.error(f"Failed to republish archive post #{item.get('id')}: {e}")
+            errors += 1
+
+        # Periodic status report
+        if (idx + 1) % 5 == 0 or (idx + 1) == len(posts):
+            try:
+                await status_msg.edit_text(
+                    f"🚀 <b>Публикация постов из архива...</b>\n\n"
+                    f"Прогресс: <b>{idx + 1}/{len(posts)}</b>\n"
+                    f"✅ Опубликовано: <b>{published}</b> | ⚠️ Ошибок: <b>{errors}</b>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        await asyncio.sleep(1.0)
+
+    await status_msg.edit_text(
+        f"✅ <b>Публикация постов завершена!</b>\n\n"
+        f"📊 Всего постов в архиве: <code>{len(posts)}</code>\n"
+        f"🎉 Опубликовано в канал: <code>{published}</code>\n"
+        f"⚠️ Ошибок: <code>{errors}</code>",
         parse_mode="HTML",
     )
 

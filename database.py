@@ -709,6 +709,42 @@ async def export_full_archive_json() -> str:
         return json.dumps(result, ensure_ascii=False, indent=2)
 
 
+async def get_approved_archive_posts() -> list[dict]:
+    """Return all archived posts with status='approved' ordered by id ASC."""
+    async with _db.execute(
+        """
+        SELECT id, user_id, user_name, user_handle, content_type,
+               text_content, edited_text, media_json, status, is_anonymous,
+               moderator_id, moderator_name, channel_msg_id,
+               orig_msg_id, admin_msg_id, created_at, moderated_at
+        FROM archive_posts WHERE status = 'approved' ORDER BY id ASC
+        """
+    ) as cur:
+        rows = await cur.fetchall()
+        return [
+            {
+                "id": r[0],
+                "user_id": r[1],
+                "user_name": r[2],
+                "user_handle": r[3],
+                "content_type": r[4],
+                "text_content": r[5],
+                "edited_text": r[6],
+                "media_list": json.loads(r[7]) if r[7] else [],
+                "status": r[8],
+                "is_anonymous": bool(r[9]) if r[9] is not None else True,
+                "moderator_id": r[10],
+                "moderator_name": r[11],
+                "channel_msg_id": r[12],
+                "orig_msg_id": r[13],
+                "admin_msg_id": r[14],
+                "created_at": r[15],
+                "moderated_at": r[16],
+            }
+            for r in rows
+        ]
+
+
 async def set_post_anonymity(orig_msg_id: int, is_anonymous: bool) -> None:
     """Toggle anonymity flag for a suggestion."""
     val = 1 if is_anonymous else 0
